@@ -12,7 +12,7 @@
 //trace mode does activate logging all GE-List entries
 //this is to get an idea how the current game is using the same
 //#define TRACE_MODE
-#define TRACE_VIEW_MODE
+//#define TRACE_VIEW_MODE
 //debug mode does activate the logging of the function entries
 //to get an idea which order the current game is calling them
 //#define DEBUG_MODE
@@ -35,18 +35,18 @@
  */
 
 //add list on the end
-static int (*sceGeListEnQueue_Func)(const void *, void *, int, PspGeListArgs *) = NULL;
+int (*sceGeListEnQueue_Func)(const void *, void *, int, PspGeListArgs *) = NULL;
 //add list on the head
-static int (*sceGeListEnQueueHead_Func)(const void *, void *, int, PspGeListArgs *) = NULL;
+int (*sceGeListEnQueueHead_Func)(const void *, void *, int, PspGeListArgs *) = NULL;
 //remove list 
-static int (*sceGeListDeQueue_Func)(int) = NULL;
+int (*sceGeListDeQueue_Func)(int) = NULL;
 //list synchro
-static int (*sceGeListSync_Func)(int, int) = NULL;
+int (*sceGeListSync_Func)(int, int) = NULL;
 /* * Update the stall address for the specified queue. */
-static int (*sceGeListUpdateStallAddr_Func)(int, void *) = NULL;
+int (*sceGeListUpdateStallAddr_Func)(int, void *) = NULL;
 
 /* Wait for drawing to complete.*/
-static int (*sceGeDrawSync_Func)(int) = NULL;
+int (*sceGeDrawSync_Func)(int) = NULL;
 
 
 static int numerek = 0;
@@ -146,7 +146,11 @@ static void Rotate3D(ScePspFMatrix4* view, float angle, float zDistance, short a
 	origin.z = (inverse.w.z - inverse.z.z*zDistance);
 	origin.x = (inverse.w.x - inverse.z.x*zDistance);
 
-#ifdef TRACE_MODE
+#ifdef TRACE_VIEW_MODE
+	sprintf(text, "View-X-Vector: %.3f|%.3f|%.3f\r\n", inverse.x.x, inverse.x.y, inverse.x.z);
+	debuglog(text);
+	sprintf(text, "View-Y-Vector: %.3f|%.3f|%.3f\r\n", inverse.y.x, inverse.y.y, inverse.y.z);
+	debuglog(text);
 	sprintf(text, "View-Z-Vector: %.3f|%.3f|%.3f\r\n", inverse.z.x, inverse.z.y, inverse.z.z);
 	debuglog(text);
 	sprintf(text, "View-Pos: %.3f|%.3f|%.3f\r\n", inverse.w.x, inverse.w.y, inverse.w.z);
@@ -156,7 +160,7 @@ static void Rotate3D(ScePspFMatrix4* view, float angle, float zDistance, short a
 #endif
 	//move the camera to a position that makes the origin the 0-point of the coord system
 	gumTranslate(view, &origin);
-#ifdef TRACE_MODE
+#ifdef TRACE_VIEW_MODE
 	ScePspFMatrix4 inverseD;
 	gumFullInverse(&inverseD, view);
 	sprintf(text, "ViewPos after move: %.3f|%.3f|%.3f\r\n", inverseD.w.x, inverseD.w.y, inverseD.w.z);
@@ -180,11 +184,18 @@ static void Rotate3D(ScePspFMatrix4* view, float angle, float zDistance, short a
 	origin.z = -origin.z;
 	gumTranslate(view, &origin);
 
-#ifdef TRACE_MODE
+#ifdef TRACE_VIEW_MODE
 	ScePspFMatrix4 inverseD2;
 	gumFullInverse(&inverseD2, view);
 	sprintf(text, "final View-Pos: %.3f|%.3f|%.3f\r\n", inverseD2.w.x, inverseD2.w.y, inverseD2.w.z);
 	debuglog(text);
+	sprintf(text, "View-X-Vector: %.3f|%.3f|%.3f\r\n", inverseD2.x.x, inverseD2.x.y, inverseD2.x.z);
+	debuglog(text);
+	sprintf(text, "View-Y-Vector: %.3f|%.3f|%.3f\r\n", inverseD2.y.x, inverseD2.y.y, inverseD2.y.z);
+	debuglog(text);
+	sprintf(text, "View-Z-Vector: %.3f|%.3f|%.3f\r\n", inverseD2.z.x, inverseD2.z.y, inverseD2.z.z);
+	debuglog(text);
+
 #endif
 
 }
@@ -489,7 +500,7 @@ static int Render3D(unsigned int *currentList, short rotateLeft) {
 				debuglog(texto);
 #endif
 				//set the pixelformat to NOP as we have set thet to pass only specific stuff (red/cyan) straight away
-				(*list) = 0x0;
+				//(*list) = 0x0;
 				break;
 			case 0xcf:
 #ifdef TRACE_MODE
@@ -556,7 +567,7 @@ static int Render3D(unsigned int *currentList, short rotateLeft) {
 				sprintf(texto,"Signal Interrupt:%X\r\n", *list);
 				debuglog(texto);
 #endif
-				//the signal as part of the display list does trigger something currently
+/*				//the signal as part of the display list does trigger something currently
 				//not visible for me - I guess something like a call back or similar
 				//this currently seem to bypass all stuff prepared here for 3D-Rendering
 				//therefore we do switch off 3D rendering if encountered a signal in the
@@ -565,6 +576,7 @@ static int Render3D(unsigned int *currentList, short rotateLeft) {
 #ifdef ERROR_LOG
 				debuglog("GE-Signal in display list. 3D mode switched off\r\n");
 #endif
+*/
 				break;
 
 			case 0xe2:
@@ -663,10 +675,6 @@ int sceGeListUpdateStallAddr_fake(int qid, void *stall) {
 	int ret;
 	unsigned char i;
 	if (draw3D == 2) {
-//#ifdef DEBUG_MODE
-//		sprintf(txt, "framebuffer, %X, %X, state %d\r\n", frameBuff[0], frameBuff[1], state);
-//		debuglog(txt);
-//#endif
 		if (state == 1 && frameBuff[0] == 0) {
 			list = MYlocal_list;
 			//try to get the current frame buffer as we need to pass it in our own
@@ -941,9 +949,9 @@ int MYsceGeListEnQueue(const void *list, void *stall, int cbid, PspGeListArgs *a
 			//prepare 3d-render:clear screen and set pixel mask
 			//if the display list is not passed at once we flip pixel filter each frame
 			//otherwise we could render red/cyan overlayed in one frame
-			//if (stall == 0)
-				//local_list_s = prepareRender3D(listId, local_list_s, 1, 0x0000ff, 1);
-			//else
+			if (stall == 0)
+				local_list_s = prepareRender3D(listId, local_list_s, 1, 0x0000ff, 1);
+			else
 				local_list_s = prepareRender3D(listId, local_list_s, 1, 0xffff00, 1);
 			sceGeListUpdateStallAddr_Func(listId, local_list_s);
 		}
@@ -1114,7 +1122,7 @@ static int MYsceGeListSync(int qid, int syncType) {
 	return (ret);
 }
 
-static int MYsceGeDrawSync(int syncType) {
+int MYsceGeDrawSync(int syncType) {
 	//we do wait until drawing complete and starting a new displaylist
 	//reset the next Start address
 	int k1 = pspSdkSetK1(0);
