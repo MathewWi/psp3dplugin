@@ -15,7 +15,10 @@
 #include <malloc.h>
 #include "hook.h"
 #include "debug.h"
+#include "gameinfo.h"
+#include "config.h"
 
+#define DEBUG_MODE
 /*------------------------------------------------------------------------------*/
 /* module info																	*/
 /*------------------------------------------------------------------------------*/
@@ -30,12 +33,13 @@ char running = 1;
 
 static int MainThread( SceSize args, void *argp )
 {
-	//debuglog("Plugin started\n");
-	hookDisplay();
+#ifdef DEBUG_MODE
+	debuglog("Plugin started\n");
+#endif
 
+	hookDisplay();
 	sceKernelDcacheWritebackInvalidateAll();
 	sceKernelIcacheInvalidateAll();
-
 	//scePowerTick( 0 );
 	
 	unsigned int paddata_old = 0;
@@ -57,7 +61,9 @@ static int MainThread( SceSize args, void *argp )
 			//press "note" button and magick begin
 			if(paddata.Buttons & PSP_CTRL_NOTE)
 			{
+#ifdef DEBUG_MODE
 				debuglog("Note pressed\n");
+#endif
 
 				// IdList Now
 				sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, thread_buf_now, MAX_THREAD, &thread_count_now);
@@ -87,7 +93,6 @@ static int MainThread( SceSize args, void *argp )
 
 				//can parse command list
 				if (draw3D == 0){
-					debuglog("draw3D = 1\r\n");
 					draw3D = 1;
 				}
 				else
@@ -132,6 +137,23 @@ static int MainThread( SceSize args, void *argp )
 
 int module_start( SceSize args, void *argp )
 {
+	//get the current game info
+	int gi_result = getGameInfo();
+	if (gi_result < 0){
+		debuglog("Error getting game info\r\n");
+	}
+#ifdef DEBUG_MODE
+	char text[200];
+	sprintf(text, "Game ID:%s\r\n", gameid);
+	debuglog(text);
+	sprintf(text, "Game Title:%.100s\r\n", gametitle);
+	debuglog(text);
+#endif
+#ifdef DEBUG_MODE
+	debuglog("get config\r\n");
+#endif
+	readConfig(&currentConfig, gametitle);
+
 	MainThreadID = sceKernelCreateThread( "PSP3D-Plugin", MainThread, 16, 0x800, 0, NULL );
 	if ( MainThreadID >= 0 )
 	{

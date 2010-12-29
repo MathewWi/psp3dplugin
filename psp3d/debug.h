@@ -1,10 +1,14 @@
 #ifndef PSP_DEBUG_H
 #define PSP_DEBUG_H
 
+//debug mode does activate the logging of the function entries
+//to get an idea which order the current game is calling them
+//#define DEBUG_MODE
+
 #include <string.h>
 
-#define LOGFILE "ms0:/psp3d1.log"
-#define LOGFILE2 "ms0:/psp3d2.log"
+#define LOGFILE "ms0:/psp3d.log"
+#define LOGFILE2 "ms0:/psp3d_.log"
 
 #define TEXTUREFILE "ms0:/test.raw"
 

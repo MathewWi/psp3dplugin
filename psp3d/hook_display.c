@@ -13,9 +13,6 @@
 //this is to get an idea how the current game is using the same
 //#define TRACE_MODE
 //#define TRACE_VIEW_MODE
-//debug mode does activate the logging of the function entries
-//to get an idea which order the current game is calling them
-//#define DEBUG_MODE
 #define ERROR_LOG
 /*
  * the usual steps while working with GE:
@@ -86,6 +83,7 @@ SceUID memid, memid2;
 void *userMemory, *userMemory2;
 char list1Ready = 0;
 char list2Ready = 0;
+char listPassedComplete = 0;
 
 #define BUFF_SIZE 128
 //static unsigned int buffer[BUFF_SIZE];
@@ -139,7 +137,7 @@ static void Rotate3D(ScePspFMatrix4* view, float angle, float zDistance, short a
 	ScePspFMatrix4 inverse;
 	//inverse the matrix to get the camera orientation in world space
 	view->w.w = 1.0f;
-	gumFastInverse(&inverse, view);
+	gumFullInverse(&inverse, view);
 	ScePspFVector3 origin;
 
 	origin.y = (inverse.w.y - inverse.z.y*zDistance);
@@ -147,13 +145,13 @@ static void Rotate3D(ScePspFMatrix4* view, float angle, float zDistance, short a
 	origin.x = (inverse.w.x - inverse.z.x*zDistance);
 
 #ifdef TRACE_VIEW_MODE
-	sprintf(text, "View-X-Vector: %.3f|%.3f|%.3f\r\n", inverse.x.x, inverse.x.y, inverse.x.z);
+	sprintf(text, "View-X-Vector: %.3f|%.3f|%.3f|%.3f\r\n", inverse.x.x, inverse.x.y, inverse.x.z, inverse.x.w);
 	debuglog(text);
-	sprintf(text, "View-Y-Vector: %.3f|%.3f|%.3f\r\n", inverse.y.x, inverse.y.y, inverse.y.z);
+	sprintf(text, "View-Y-Vector: %.3f|%.3f|%.3f|%.3f\r\n", inverse.y.x, inverse.y.y, inverse.y.z, inverse.y.w);
 	debuglog(text);
-	sprintf(text, "View-Z-Vector: %.3f|%.3f|%.3f\r\n", inverse.z.x, inverse.z.y, inverse.z.z);
+	sprintf(text, "View-Z-Vector: %.3f|%.3f|%.3f|%3.f\r\n", inverse.z.x, inverse.z.y, inverse.z.z, inverse.z.w);
 	debuglog(text);
-	sprintf(text, "View-Pos: %.3f|%.3f|%.3f\r\n", inverse.w.x, inverse.w.y, inverse.w.z);
+	sprintf(text, "View-Pos: %.3f|%.3f|%.3f|%.3f\r\n", inverse.w.x, inverse.w.y, inverse.w.z, inverse.w.w);
 	debuglog(text);
 	sprintf(text, "VRO extracted: %.3f|%.3f|%.3f\r\n", origin.x, origin.y, origin.z);
 	debuglog(text);
@@ -187,13 +185,13 @@ static void Rotate3D(ScePspFMatrix4* view, float angle, float zDistance, short a
 #ifdef TRACE_VIEW_MODE
 	ScePspFMatrix4 inverseD2;
 	gumFullInverse(&inverseD2, view);
-	sprintf(text, "final View-Pos: %.3f|%.3f|%.3f\r\n", inverseD2.w.x, inverseD2.w.y, inverseD2.w.z);
+	sprintf(text, "final View-Pos: %.3f|%.3f|%.3f|%.3f\r\n", inverseD2.w.x, inverseD2.w.y, inverseD2.w.z, inverseD2.w.w);
 	debuglog(text);
-	sprintf(text, "View-X-Vector: %.3f|%.3f|%.3f\r\n", inverseD2.x.x, inverseD2.x.y, inverseD2.x.z);
+	sprintf(text, "View-X-Vector: %.3f|%.3f|%.3f|%.3f\r\n", inverseD2.x.x, inverseD2.x.y, inverseD2.x.z, inverseD2.x.w);
 	debuglog(text);
-	sprintf(text, "View-Y-Vector: %.3f|%.3f|%.3f\r\n", inverseD2.y.x, inverseD2.y.y, inverseD2.y.z);
+	sprintf(text, "View-Y-Vector: %.3f|%.3f|%.3f|%.3f\r\n", inverseD2.y.x, inverseD2.y.y, inverseD2.y.z, inverseD2.y.w);
 	debuglog(text);
-	sprintf(text, "View-Z-Vector: %.3f|%.3f|%.3f\r\n", inverseD2.z.x, inverseD2.z.y, inverseD2.z.z);
+	sprintf(text, "View-Z-Vector: %.3f|%.3f|%.3f|%.3f\r\n", inverseD2.z.x, inverseD2.z.y, inverseD2.z.z, inverseD2.z.w);
 	debuglog(text);
 
 #endif
@@ -655,7 +653,7 @@ static int Render3D(unsigned int *currentList, short rotateLeft) {
 	return viewMatrixCount;
 }
 
-int sceGeListUpdateStallAddr_fake(int qid, void *stall) {
+int sceGeListUpdateStallAddr3D(int qid, void *stall) {
 	//this is where the display list seem to be passed to the GE
 	//for processing
 	//the provided stall adress is the current end of the display list
@@ -715,7 +713,7 @@ int sceGeListUpdateStallAddr_fake(int qid, void *stall) {
 #ifdef DEBUG_MODE
 		debuglog("Update Stall - draw3D 3\r\n");
 #endif
-		Render3D(MYlocal_list, state-1);
+		Render3D(MYlocal_list, 0);
 	}
 
 	nextStart_list = (unsigned int*) stall;
@@ -844,7 +842,7 @@ static unsigned int* prepareRender3D(unsigned int listId, unsigned int* list, sh
  * within the same GE list step by step forward to pass the other bits to
  * the hardware
  */
-int MYsceGeListEnQueue(const void *list, void *stall, int cbid, PspGeListArgs *arg) {
+int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *arg) {
 	int k1 = pspSdkSetK1(0);
 	int listId;
 	unsigned int* local_list_s;
@@ -949,57 +947,61 @@ int MYsceGeListEnQueue(const void *list, void *stall, int cbid, PspGeListArgs *a
 			//prepare 3d-render:clear screen and set pixel mask
 			//if the display list is not passed at once we flip pixel filter each frame
 			//otherwise we could render red/cyan overlayed in one frame
-			if (stall == 0)
+//			if (stall == 0)
 				local_list_s = prepareRender3D(listId, local_list_s, 1, 0x0000ff, 1);
-			else
-				local_list_s = prepareRender3D(listId, local_list_s, 1, 0xffff00, 1);
+//			else
+//				local_list_s = prepareRender3D(listId, local_list_s, 1, 0xffff00, 1);
 			sceGeListUpdateStallAddr_Func(listId, local_list_s);
 		}
 
-		//now manipulate the GE list to change the view-Matrix
-		if (stall == 0 && afterSync == 1){
-			numerek++;
-			//if we would pass the list directly to the hardware we do manipulate the one first
-			//rotate view left
-			if (Render3D((unsigned int*)list, 1) <= 0){
+		if (stall == 0){
+			listPassedComplete = 1;
+			//now manipulate the GE list to change the view-Matrix
+			if (afterSync == 1){
+				numerek++;
+				//if we would pass the list directly to the hardware we do manipulate the one first
+				//rotate view left
+				if (Render3D((unsigned int*)list, 1) <= 0){
+/*
 #ifdef DEBUG_MODE
-				debuglog("add view matrix using own display list\r\n");
+					debuglog("add view matrix using own display list\r\n");
 #endif
-				//if there was no viewMatrix part of the displayList we need to pass the viewMatrix
-				//with our own display list
-				gumLoadIdentity(&view);
-				Rotate3D(&view, ROTATE_LEFT, 7.0f, ERA_Y);
-				(*local_list_s) = (unsigned int) (0x3c << 24);
-				local_list_s++;
+					//if there was no viewMatrix part of the displayList we need to pass the viewMatrix
+					//with our own display list
+					gumLoadIdentity(&view);
+					Rotate3D(&view, ROTATE_LEFT, 7.0f, ERA_Y);
+					(*local_list_s) = (unsigned int) (0x3c << 24);
+					local_list_s++;
 
-				(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.x.x)) >> 8) & 0xffffff);
-				local_list_s++;
-				(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.x.y)) >> 8) & 0xffffff);
-				local_list_s++;
-				(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.x.z)) >> 8) & 0xffffff);
-				local_list_s++;
-				(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.y.x)) >> 8) & 0xffffff);
-				local_list_s++;
-				(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.y.y)) >> 8) & 0xffffff);
-				local_list_s++;
-				(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.y.z)) >> 8) & 0xffffff);
-				local_list_s++;
-				(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.z.x)) >> 8) & 0xffffff);
-				local_list_s++;
-				(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.z.y)) >> 8) & 0xffffff);
-				local_list_s++;
-				(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.z.z)) >> 8) & 0xffffff);
-				local_list_s++;
-				(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.w.x)) >> 8) & 0xffffff);
-				local_list_s++;
-				(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.w.y)) >> 8) & 0xffffff);
-				local_list_s++;
-				(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.w.z)) >> 8) & 0xffffff);
-				local_list_s++;
+					(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.x.x)) >> 8) & 0xffffff);
+					local_list_s++;
+					(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.x.y)) >> 8) & 0xffffff);
+					local_list_s++;
+					(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.x.z)) >> 8) & 0xffffff);
+					local_list_s++;
+					(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.y.x)) >> 8) & 0xffffff);
+					local_list_s++;
+					(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.y.y)) >> 8) & 0xffffff);
+					local_list_s++;
+					(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.y.z)) >> 8) & 0xffffff);
+					local_list_s++;
+					(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.z.x)) >> 8) & 0xffffff);
+					local_list_s++;
+					(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.z.y)) >> 8) & 0xffffff);
+					local_list_s++;
+					(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.z.z)) >> 8) & 0xffffff);
+					local_list_s++;
+					(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.w.x)) >> 8) & 0xffffff);
+					local_list_s++;
+					(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.w.y)) >> 8) & 0xffffff);
+					local_list_s++;
+					(*local_list_s) = (unsigned int) (0x3d << 24) | (((*((u32*) &view.w.z)) >> 8) & 0xffffff);
+					local_list_s++;
 
-				sceGeListUpdateStallAddr_Func(listId, local_list_s);
+					sceGeListUpdateStallAddr_Func(listId, local_list_s);
+*/
+				}
 			}
-
 			//try to render the second frame at the same time to overlay the
 			//current draw
 			//pass current list to hardware and wait until it was processed
@@ -1026,6 +1028,7 @@ int MYsceGeListEnQueue(const void *list, void *stall, int cbid, PspGeListArgs *a
 
 			//rotate View right
 			if (Render3D((unsigned int*)list, 0) <= 0){
+/*
 #ifdef DEBUG_MODE
 				debuglog("add view matrix using own display list\r\n");
 #endif
@@ -1062,6 +1065,7 @@ int MYsceGeListEnQueue(const void *list, void *stall, int cbid, PspGeListArgs *a
 				local_list_s++;
 
 				sceGeListUpdateStallAddr_Func(listId, local_list_s);
+*/
 			}
 			//sceKernelDcacheWritebackInvalidateAll();
 		}
@@ -1092,7 +1096,7 @@ int MYsceGeListEnQueue(const void *list, void *stall, int cbid, PspGeListArgs *a
 	return (ret);
 }
 
-static int MYsceGeListEnQueueHead(const void *list, void *stall, int cbid,
+static int sceGeListEnQueue3DHead(const void *list, void *stall, int cbid,
 		PspGeListArgs *arg) {
 #ifdef DEBUG_MODE
 	debuglog("GeListEnQueueHead\n");
@@ -1122,7 +1126,7 @@ static int MYsceGeListSync(int qid, int syncType) {
 	return (ret);
 }
 
-int MYsceGeDrawSync(int syncType) {
+int sceGeDrawSync3D(int syncType) {
 	//we do wait until drawing complete and starting a new displaylist
 	//reset the next Start address
 	int k1 = pspSdkSetK1(0);
@@ -1136,6 +1140,28 @@ int MYsceGeDrawSync(int syncType) {
 #endif
 
 	nextStart_list = 0;
+	//TEST BEGIN:
+	//if the list was not passed complete, but in chunks using update stall
+	//we would need to pass the whole list a second time with the different pixelmask...
+	if (draw3D == 3 && listPassedComplete == 0){
+#ifdef DEBUG_MODE
+		sprintf(text, "pass last list after stall 2nd time %X\r\n", (unsigned int)MYlocal_list);
+		debuglog(text);
+#endif
+		unsigned int * local_list_s = (unsigned int*) (((unsigned int) userMemory)
+								| 0x40000000);
+		int listId = sceGeListEnQueue_Func(local_list_s, local_list_s, 0, 0);
+
+		local_list_s = prepareRender3D(listId, local_list_s, state - 1, 0xffff00, 0);
+		sceGeListUpdateStallAddr_Func(listId, local_list_s);
+
+		Render3D((unsigned int*)MYlocal_list, 1);
+		listId = sceGeListEnQueue_Func(MYlocal_list, 0, 0, 0);
+		sceGeListSync_Func(listId, 0);
+	}
+
+	//TEST END
+
 	//after each render cycle switch the state
 	if (state == 1){
 		state = 2;
@@ -1173,8 +1199,8 @@ void hookDisplay(void) {
 	userMemory2 = sceKernelGetBlockHeadAddr(memid2);
 
 	//hook GE modules
-	//sceGeListEnQueue_Func = ApiHookByNid("sceGE_Manager", "sceGe_user", 0xAB49E76A, MYsceGeListEnQueue);
-	//sceGeDrawSync_Func = ApiHookByNid("sceGE_Manager", "sceGe_user", 0xB287BD61, MYsceGeDrawSync);
+	//sceGeListEnQueue_Func = ApiHookByNid("sceGE_Manager", "sceGe_user", 0xAB49E76A, sceGeListEnQueue3D);
+	//sceGeDrawSync_Func = ApiHookByNid("sceGE_Manager", "sceGe_user", 0xB287BD61, sceGeDrawSync3D);
 
 
 	SceModule *module2 = sceKernelFindModuleByName("sceGE_Manager");
@@ -1190,7 +1216,7 @@ void hookDisplay(void) {
 				0xAB49E76A);
 		void *hook_addr = HookSyscallAddress(sceGeListEnQueue_Func);
 		if (hook_addr != NULL)
-			HookFuncSetting(hook_addr, MYsceGeListEnQueue);
+			HookFuncSetting(hook_addr, sceGeListEnQueue3D);
 		else {
 #ifdef ERROR_LOG
 			debuglog("unable to hook sceGeListEnQueue\r\n");
@@ -1203,7 +1229,7 @@ void hookDisplay(void) {
 				0x1C0D95A6);
 		void *hook_addr = HookSyscallAddress(sceGeListEnQueueHead_Func);
 		if (hook_addr != NULL)
-			HookFuncSetting(hook_addr, MYsceGeListEnQueueHead);
+			HookFuncSetting(hook_addr, sceGeListEnQueue3DHead);
 		else {
 #ifdef ERROR_LOG
 			debuglog("unable to hook sceGeListEnQueueHead\r\n");
@@ -1242,7 +1268,7 @@ void hookDisplay(void) {
 				0xE0D68148);
 		void *hook_addr = HookSyscallAddress(sceGeListUpdateStallAddr_Func);
 		if (hook_addr != NULL)
-			HookFuncSetting(hook_addr, sceGeListUpdateStallAddr_fake);
+			HookFuncSetting(hook_addr, sceGeListUpdateStallAddr3D);
 		else {
 #ifdef ERROR_LOG
 			debuglog("unable to hook sceGeListUpdateStall\r\n");
@@ -1253,7 +1279,7 @@ void hookDisplay(void) {
 		sceGeDrawSync_Func = HookNidAddress(module2, "sceGe_user", 0xB287BD61);
 		void *hook_addr = HookSyscallAddress(sceGeDrawSync_Func);
 		if (hook_addr != NULL)
-			HookFuncSetting(hook_addr, MYsceGeDrawSync);
+			HookFuncSetting(hook_addr, sceGeDrawSync3D);
 		else {
 #ifdef ERROR_LOG
 			debuglog("unable to hook sceGeDrawSync\r\n");
