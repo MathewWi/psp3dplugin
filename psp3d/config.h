@@ -26,6 +26,7 @@ typedef struct {
 	char *gameName;
 	char rotationAxis;
 	float rotationDistance;
+	short clearScreen;
 }configData;
 
 configData currentConfig;

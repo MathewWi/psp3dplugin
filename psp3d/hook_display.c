@@ -9,6 +9,7 @@
 #include <psptypes.h>
 #include <malloc.h>
 #include <stdio.h>
+#include <config.h>
 //trace mode does activate logging all GE-List entries
 //this is to get an idea how the current game is using the same
 //#define TRACE_MODE
@@ -61,9 +62,9 @@ unsigned int frameBuff[2] = { 0, 0 }; //draw buffer
 unsigned int frameBuffW[2] = { 0, 0 }; //draw buff height bits and buffer width
 
 enum eRotationAxis{
-	ERA_Y = 0,
-    ERA_X = 1,
-    ERA_Z = 2
+	ERA_Y = 'Y',
+    ERA_X = 'X',
+    ERA_Z = 'Z'
 } eRotationAxis;
 
 int adress_number = 0;
@@ -132,7 +133,7 @@ static void getFrameBuffFromList(unsigned int* list, unsigned int* frameB, unsig
  * will be a fix point in front of the camera represented by the view
  * matrix
  */
-static void Rotate3D(ScePspFMatrix4* view, float angle, float zDistance, short axis){
+static void Rotate3D(ScePspFMatrix4* view, float angle){
 	char text[200];
 	ScePspFMatrix4 inverse;
 	//inverse the matrix to get the camera orientation in world space
@@ -140,9 +141,9 @@ static void Rotate3D(ScePspFMatrix4* view, float angle, float zDistance, short a
 	gumFullInverse(&inverse, view);
 	ScePspFVector3 origin;
 
-	origin.y = (inverse.w.y - inverse.z.y*zDistance);
-	origin.z = (inverse.w.z - inverse.z.z*zDistance);
-	origin.x = (inverse.w.x - inverse.z.x*zDistance);
+	origin.y = (inverse.w.y - inverse.z.y*currentConfig.rotationDistance);
+	origin.z = (inverse.w.z - inverse.z.z*currentConfig.rotationDistance);
+	origin.x = (inverse.w.x - inverse.z.x*currentConfig.rotationDistance);
 
 #ifdef TRACE_VIEW_MODE
 	sprintf(text, "View-X-Vector: %.3f|%.3f|%.3f|%.3f\r\n", inverse.x.x, inverse.x.y, inverse.x.z, inverse.x.w);
@@ -165,7 +166,7 @@ static void Rotate3D(ScePspFMatrix4* view, float angle, float zDistance, short a
 	debuglog(text);
 #endif
 	//now rotate the view
-	switch (axis){
+	switch (currentConfig.rotationAxis){
 	case ERA_Y:
 		gumRotateY(view, angle);
 		break;
@@ -413,9 +414,9 @@ static int Render3D(unsigned int *currentList, short rotateLeft) {
 					//same and store the data back
 					if (viewItem == 12) {
 						if (rotateLeft == 1) {
-							Rotate3D(&view, ROTATE_LEFT, 7.0f, ERA_Y);
+							Rotate3D(&view, ROTATE_LEFT);
 						} else if (rotateLeft == 0) {
-							Rotate3D(&view, ROTATE_RIGHT, 7.0f, ERA_Y);
+							Rotate3D(&view, ROTATE_RIGHT);
 						}
 
 						(*cmdViewMatrix[0]) = (unsigned int) (command << 24)
@@ -708,11 +709,7 @@ int sceGeListUpdateStallAddr3D(int qid, void *stall) {
 			//we give up and stop 3D mode	//not possible to get 2 different draw buffers, switch off 3D mode
 			draw3D = 0;
 		}
-	}
-	if (draw3D == 3) {
-#ifdef DEBUG_MODE
-		debuglog("Update Stall - draw3D 3\r\n");
-#endif
+	}else if (draw3D == 3) {
 		Render3D(MYlocal_list, 0);
 	}
 
@@ -856,6 +853,10 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 		debuglog(text);
 	}
 #endif
+	//each time the enqueue was called we reset the next start adress for all upcomming
+	//updateStall calls
+	nextStart_list = 0;
+
 	if (draw3D == 2){
 #ifdef DEBUG_MODE
 		debuglog("GeListEnqueue - draw3D 2\r\n");
@@ -938,7 +939,7 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 					| 0x40000000);//(((unsigned int)list;//gList)| 0x40000000);
 			listId = sceGeListEnQueue_Func(local_list_s, local_list_s, cbid, arg);
 			//prepare 3d-render: clear screen and set pixel mask
-			local_list_s = prepareRender3D(listId, local_list_s, 0, 0x0000ff, 1);
+			local_list_s = prepareRender3D(listId, local_list_s, 0, 0x0000ff, currentConfig.clearScreen);
 			sceGeListUpdateStallAddr_Func(listId, local_list_s);
 		} else if (state == 2 && afterSync == 1) {
 			local_list_s = (unsigned int*) (((unsigned int) userMemory2)
@@ -948,7 +949,7 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 			//if the display list is not passed at once we flip pixel filter each frame
 			//otherwise we could render red/cyan overlayed in one frame
 //			if (stall == 0)
-				local_list_s = prepareRender3D(listId, local_list_s, 1, 0x0000ff, 1);
+				local_list_s = prepareRender3D(listId, local_list_s, 1, 0x0000ff, currentConfig.clearScreen);
 //			else
 //				local_list_s = prepareRender3D(listId, local_list_s, 1, 0xffff00, 1);
 			sceGeListUpdateStallAddr_Func(listId, local_list_s);
@@ -1152,12 +1153,15 @@ int sceGeDrawSync3D(int syncType) {
 								| 0x40000000);
 		int listId = sceGeListEnQueue_Func(local_list_s, local_list_s, 0, 0);
 
-		local_list_s = prepareRender3D(listId, local_list_s, state - 1, 0xffff00, 0);
+		if (state == 1)
+			local_list_s = prepareRender3D(listId, local_list_s, 0, 0xffff00, 0);
+		else
+			local_list_s = prepareRender3D(listId, local_list_s, 1, 0xffff00, 0);
 		sceGeListUpdateStallAddr_Func(listId, local_list_s);
 
 		Render3D((unsigned int*)MYlocal_list, 1);
 		listId = sceGeListEnQueue_Func(MYlocal_list, 0, 0, 0);
-		sceGeListSync_Func(listId, 0);
+//		sceGeListSync_Func(listId, 0);
 	}
 
 	//TEST END
@@ -1181,11 +1185,6 @@ int sceGeDrawSync3D(int syncType) {
 /*------------------------------------------------------------------------------*/
 void hookDisplay(void) {
 	char txt[50];
-#ifdef DEBUG_MODE
-	debuglog("Start hooking display\n");
-#endif
-	//dynamic hook testing
-	int result = 0;
 
 #ifdef DEBUG_MODE
 	debuglog("get user memory\n");
@@ -1198,10 +1197,9 @@ void hookDisplay(void) {
 				sizeof(unsigned int) * BUFF_SIZE, NULL);
 	userMemory2 = sceKernelGetBlockHeadAddr(memid2);
 
-	//hook GE modules
-	//sceGeListEnQueue_Func = ApiHookByNid("sceGE_Manager", "sceGe_user", 0xAB49E76A, sceGeListEnQueue3D);
-	//sceGeDrawSync_Func = ApiHookByNid("sceGE_Manager", "sceGe_user", 0xB287BD61, sceGeDrawSync3D);
-
+#ifdef DEBUG_MODE
+	debuglog("Start hooking display\n");
+#endif
 
 	SceModule *module2 = sceKernelFindModuleByName("sceGE_Manager");
 	if (module2 == NULL) {

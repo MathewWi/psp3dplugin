@@ -99,8 +99,16 @@ int readConfig(configData* cfg, const char* gameTitle){
 			if (strncmp(cfgLine, "ROT_POINT=", 10)==0){
 				sscanf(&cfgLine[10], "%f", &cfg->rotationDistance);
 			}
+			readLine(fd, cfgLine, 100); //should be the clear flag
 #ifdef DEBUG_MODE
-			sprintf(txt, "Rotation:%c, Distance:%f\r\n", cfg->rotationAxis, cfg->rotationDistance);
+			sprintf(txt, "next line: %.90s\r\n", cfgLine);
+			debuglog(txt);
+#endif
+			if (strncmp(cfgLine, "ROT_CLEAR=", 10)==0){
+				sscanf(&cfgLine[10], "%i", &cfg->clearScreen);
+			}
+#ifdef DEBUG_MODE
+			sprintf(txt, "Rotation:%c, Distance:%f, Clear:%i\r\n", cfg->rotationAxis, cfg->rotationDistance, cfg->clearScreen);
 			debuglog(txt);
 #endif
 		}

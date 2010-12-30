@@ -4,16 +4,10 @@
 #include <pspkernel.h>
 #include <psputilsforkernel.h>
 #include <string.h>
-/* Test new hooking mode */
 #include <stdio.h>
-//#include <psputilsforkernel.h>
-#include "systemctrl.h"
-#include "interruptman.h"
+//#include "interruptman.h"
 #include "hook.h"
 #include "debug.h"
-
-//enable DebugMode while hooking
-#define DEBUG_MODE
 
 // MIPS Opcodes
 #define MIPS_NOP 0x00000000
@@ -23,149 +17,8 @@
 #define MIPS_PUSH_RA(STACKPOS) (0xAFBF0000 + (((unsigned int)(STACKPOS)) & 0x0000FFFF))
 #define MIPS_POP_RA(STACKPOS) (0x8FBF0000 + (((unsigned int)(STACKPOS)) & 0x0000FFFF))
 #define MIPS_RETURN 0x03E00008
+
 //#include "hook.h"
-
-/* try new hook approach based on psplink */
-struct SyscallHeader
-{
-        void *unk;
-        unsigned int basenum;
-        unsigned int topnum;
-        unsigned int size;
-};
-
-void* getSysCall_address(unsigned int addr){
-	struct SyscallHeader *head;
-	unsigned int *syscalls;
-	void **ptr;
-	int size;
-	int i;
-
-	asm(
-					"cfc0 %0, $12\n"
-					: "=r"(ptr)
-	   );
-
-	if(!ptr)
-	{
-			return NULL;
-	}
-
-	head = (struct SyscallHeader *) *ptr;
-	syscalls = (unsigned int*) (*ptr + 0x10);
-	size = (head->size - 0x10) / sizeof(unsigned int);
-
-	for(i = 0; i < size; i++)
-	{
-			if(syscalls[i] == addr)
-			{
-					return &syscalls[i];
-			}
-	}
-
-	return NULL;
-}
-/*
- * hook a function and replace the call with the given one.
- * @return: original function adress
- */
-void *ApiHookByNid(const char *modName, const char *libname, u32 nid, void* customFunc){
-	//first get the library
-	struct SceLibraryEntryTable *entry;
-	void *entTab;
-	int entLen;
-#ifdef DEBUG_MODE
-	char txt[100];
-#endif
-
-	SceModule* module = sceKernelFindModuleByName(modName);
-
-	if (module != NULL){
-
-		int i = 0;
-
-			entTab = module->ent_top;
-			entLen = module->ent_size;
-			short found = 0;
-			while(i < entLen && found == 0)
-			{
-					entry = (struct SceLibraryEntryTable *) (entTab + i);
-
-					if((entry->libname) && (strcmp(entry->libname, libname) == 0))
-					{
-						//this is what we are looking for
-						found = 1;
-					}
-					else if(!entry->libname && !libname)
-					{
-						//this is what we are looking for
-						found = 1;
-					}
-
-					i += (entry->len * 4);
-			}
-			if (found == 1){
-				//get function address from nid
-				int count;
-				int total;
-				unsigned int *vars;
-				unsigned int exportAddr = 0;
-
-				total = entry->stubcount + entry->vstubcount;
-				vars = entry->entrytable;
-
-				if(entry->stubcount > 0)
-				{
-						for(count = 0; count < entry->stubcount; count++)
-						{
-								if(vars[count] == nid)
-								{
-										exportAddr = &vars[count+total];
-										break;
-								}
-						}
-				}
-				//get the syscall adress
-				unsigned int *sysAddr = getSysCall_address(exportAddr);
-				int intc;
-
-				if(!sysAddr)
-				{
-#ifdef DEBUG_MODE
-				sprintf(txt, "could not find syscall address for %X\r\n", exportAddr);
-				debuglog(txt);
-#endif
-					return NULL;
-				}
-
-				intc = pspSdkDisableInterrupts();
-				*sysAddr = (unsigned int) customFunc;
-				sceKernelDcacheWritebackInvalidateRange(sysAddr, sizeof(sysAddr));
-				sceKernelIcacheInvalidateRange(sysAddr, sizeof(sysAddr));
-				pspSdkEnableInterrupts(intc);
-
-#ifdef DEBUG_MODE
-				sprintf(txt, "hooked %X in module %s to %X\r\n", exportAddr, modName, customFunc);
-				debuglog(txt);
-#endif
-				return exportAddr;
-			} else{
-#ifdef DEBUG_MODE
-				sprintf(txt, "lib %s not found in module %s\r\n", libname, modName);
-				debuglog(txt);
-#endif
-				return NULL;
-			}
-	} else {
-#ifdef DEBUG_MODE
-		sprintf(txt, "module %s not found\r\n", modName);
-		debuglog(txt);
-#endif
-
-	}
-
-	return NULL;
-}
 
 /*------------------------------------------------------------------------------*/
 /* HookNidAddress																*/
