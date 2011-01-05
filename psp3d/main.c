@@ -17,8 +17,6 @@
 #include "debug.h"
 #include "gameinfo.h"
 #include "config.h"
-
-#define DEBUG_MODE
 /*------------------------------------------------------------------------------*/
 /* module info																	*/
 /*------------------------------------------------------------------------------*/
@@ -33,24 +31,35 @@ char running = 1;
 
 static int MainThread( SceSize args, void *argp )
 {
+	unsigned int paddata_old = 0;
+	short hooked = 0;
+	int x, y, thread_count_start, thread_count_now;
+	SceUID thread_buf_start[MAX_THREAD], thread_buf_now[MAX_THREAD];
+	SceCtrlData paddata;
 #ifdef DEBUG_MODE
-	debuglog("Plugin started\n");
+	debuglog("Plugin started\r\n");
 #endif
 
 	hookDisplay();
-	sceKernelDcacheWritebackInvalidateAll();
-	sceKernelIcacheInvalidateAll();
-	//scePowerTick( 0 );
-	
-	unsigned int paddata_old = 0;
-	int x, y, thread_count_start, thread_count_now;
-	SceUID thread_buf_start[MAX_THREAD], thread_buf_now[MAX_THREAD], myThread = sceKernelGetThreadId();
-	SceCtrlData paddata;
-	
-	sceKernelDelayThread(10000);
 
+#ifdef DEBUG_MODE
+	debuglog("try getting own thread id\r\n");
+#endif
+	SceUID myThread = sceKernelGetThreadId();
+	sceKernelDelayThread(10000);
+#ifdef DEBUG_MODE
+	debuglog("get config\r\n");
+#endif
+	readConfig(&currentConfig, gametitle);
+
+#ifdef DEBUG_MODE
+	debuglog("try getting ThreadmanIdList\r\n");
+#endif
 	sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, thread_buf_start, MAX_THREAD, &thread_count_start);
 
+#ifdef DEBUG_MODE
+	debuglog("Start main loop\r\n");
+#endif
 	
 	while(running)
 	{
@@ -59,15 +68,15 @@ static int MainThread( SceSize args, void *argp )
 		if(paddata.Buttons != paddata_old)
 		{
 			//press "note" button and magick begin
-			if(paddata.Buttons & PSP_CTRL_NOTE)
+			if(paddata.Buttons & currentConfig.activationBtn)
 			{
 #ifdef DEBUG_MODE
-				debuglog("Note pressed\n");
+				debuglog("ActiavtionButton pressed\n");
 #endif
 
 				// IdList Now
 				sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, thread_buf_now, MAX_THREAD, &thread_count_now);
-
+/*
 				//hold all threads for a moment
 				for(x = 0; x < thread_count_now; x++)
 				{
@@ -89,8 +98,17 @@ static int MainThread( SceSize args, void *argp )
 					}
 
 				}
-					
-
+	*/
+/*				if (hooked == 0){
+//					hookDisplay();
+#ifdef DEBUG_MODE
+	debuglog("get config\r\n");
+#endif
+	readConfig(&currentConfig, gametitle);
+					hooked = 1;
+					sceKernelDelayThread(10000);
+				}
+*/
 				//can parse command list
 				if (draw3D == 0){
 					draw3D = 1;
@@ -98,6 +116,7 @@ static int MainThread( SceSize args, void *argp )
 				else
 					draw3D = 9;
 
+				/*
 				//resume all threads
 				for(x = 0; x < thread_count_now; x++)
 				{
@@ -118,6 +137,7 @@ static int MainThread( SceSize args, void *argp )
 						sceKernelResumeThread(tmp_thid);
 					}
 				}
+				*/
 			}
 		}
 		paddata_old = paddata.Buttons;
@@ -149,12 +169,8 @@ int module_start( SceSize args, void *argp )
 	sprintf(text, "Game Title:%.100s\r\n", gametitle);
 	debuglog(text);
 #endif
-#ifdef DEBUG_MODE
-	debuglog("get config\r\n");
-#endif
-	readConfig(&currentConfig, gametitle);
 
-	MainThreadID = sceKernelCreateThread( "PSP3D-Plugin", MainThread, 16, 0x800, 0, NULL );
+	MainThreadID = sceKernelCreateThread( "PSP3DPlugin", MainThread, 16, 0x800, 0, NULL );
 	if ( MainThreadID >= 0 )
 	{
 		sceKernelStartThread( MainThreadID, args, argp );

@@ -23,10 +23,12 @@
 #define CONFIG_H_
 
 typedef struct {
-	char *gameName;
-	char rotationAxis;
+	unsigned int clearScreen;
+	unsigned int rotateIdentity;
+	unsigned int activationBtn;
 	float rotationDistance;
-	short clearScreen;
+	float rotationAngle;
+	char rotationAxis;
 }configData;
 
 configData currentConfig;

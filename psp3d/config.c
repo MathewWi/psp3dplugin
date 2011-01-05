@@ -21,13 +21,81 @@
 
 #include <pspkernel.h>
 #include <pspiofilemgr.h>
+#include <pspgu.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include "config.h"
 #include "debug.h"
 
-int readLine(int fd, char* buffer, short width){
+short isNumber(const char z){
+	if (z == '0') return 0;
+	if (z == '1') return 1;
+	if (z == '2') return 2;
+	if (z == '3') return 3;
+	if (z == '4') return 4;
+	if (z == '5') return 5;
+	if (z == '6') return 6;
+	if (z == '7') return 7;
+	if (z == '8') return 8;
+	if (z == '9') return 9;
+	return -1;
+}
+unsigned int charToUi(const char* text){
+	unsigned int temp = 0;
+	unsigned short i;
+	short num;
+	for (i = 0;i <strlen(text);i++){
+		num = isNumber(text[i]);
+		if (num >= 0){
+			temp*=10;
+			temp+=num;
+		} else {
+			//once we got the first non number char we return the nbumber until now
+			return temp;
+		}
+	}
+	return temp;
+}
 
-	short byte = 0;
-	char endl = 0;
+float charToF(const char* text){
+	float temp = 0;
+	float temp2 = 0;
+	unsigned int expo = 0;
+	short num;
+	unsigned short i;
+	char txt[100];
+
+	for (i = 0;i<strlen(text);i++){
+		num = isNumber(text[i]);
+		//numbers before the decimal char
+		if (num >= 0){
+			if (expo == 0){
+				temp*=10;
+				temp+=num;
+			} else {
+				temp2 = num;
+				temp2/=expo;
+				temp+=temp2;
+				expo*=10;
+			}
+		} else {
+			//decimal sign set expo to 10 first
+			if (text[i] == '.' && expo == 0){
+				expo = 10;
+			}
+			else
+				//no further acceptable char, return number till now
+				return temp;
+		}
+	}
+
+	return temp;
+}
+
+unsigned int readLine(int fd, char* buffer, short width){
+
+	unsigned int byte = 0;
+	short endl = 0;
 	while (!endl){
 		if (sceIoRead(fd, &buffer[byte], 1) <= 0) return 0;
 		if (buffer[byte] == '\r' ||
@@ -50,20 +118,28 @@ int readLine(int fd, char* buffer, short width){
 }
 
 int readConfig(configData* cfg, const char* gameTitle){
-	int fd;
+	int fd, bytes, ret;
 #ifdef DEBUG_MODE
-	char txt[100];
+	char txt[150];
 #endif
-	char cfgLine[100];
-	char* cfgEnd;
+	char cfgLine[110];
 	short sectionFound = 0;
 	short feof = 0;
+// set default values in case there are sections missing in the file or it could
+// not be read proberbly
+	cfg->rotationAxis = 'Y';
+	cfg->rotationDistance = 7.0f;
+	cfg->rotationAngle = 3.5f;
+	cfg->clearScreen = 1;
+	cfg->rotateIdentity = 1;
+	cfg->activationBtn = 0x800000; //PSP_CTRL_NOTE
+
 	fd = sceIoOpen("ms0:/seplugins/psp3d.cfg",PSP_O_RDONLY, 0777);
 	if (fd >= 0){
 		//read the next line of the file, until we have found the
 		//right game section
 		while (!sectionFound && !feof){
-			if (readLine(fd, cfgLine, 100) <= 0){
+			if (readLine(fd, cfgLine, 100) == 0){
 				feof = 1;
 			} else {
 				if (cfgLine[0] == '['){
@@ -79,47 +155,61 @@ int readConfig(configData* cfg, const char* gameTitle){
 		// we know the section the config data is stored
 		if (sectionFound){
 #ifdef DEBUG_MODE
-			sprintf(txt, "SectionFound: %.90s\r\n", cfgLine);
+			sprintf(txt, "SectionFound: %.30s\r\n", cfgLine);
 			debuglog(txt);
 #endif
 			//extract the necessary data
-			readLine(fd, cfgLine, 100); //should be the axis
+			while (!feof){
+				bytes = readLine(fd, cfgLine, 100); //should be the axis
+				if (bytes == 0 || cfgLine[0] == '['){
+					feof = 1;
+				}else{
 #ifdef DEBUG_MODE
-			sprintf(txt, "next line: %.90s\r\n", cfgLine);
-			debuglog(txt);
+					sprintf(txt, "Current Line: %.50s\r\n", cfgLine);
+					debuglog(txt);
 #endif
-			if (strncmp(cfgLine, "ROT_AXIS=", 9) == 0){
-				cfg->rotationAxis = cfgLine[9];
+
+					if (strncmp(cfgLine, "ROT_AXIS=", 9) == 0)
+						cfg->rotationAxis = cfgLine[9];
+					if (strncmp(cfgLine, "ROT_POINT=", 10)==0)
+						//sscanf(&cfgLine[10], "%f", &cfg->rotationDistance);
+						cfg->rotationDistance = charToF(&cfgLine[10]);
+						//cfg->rotationDistance = 8.0f;
+					if (strncmp(cfgLine, "ROT_ANGLE=", 10)==0){
+						//sscanf(&cfgLine[10], "%f", &cfg->rotationAngle);
+						cfg->rotationAngle = charToF(&cfgLine[10]);
+						cfg->rotationAngle = cfg->rotationAngle*GU_PI/180.0f;
+					}
+					if (strncmp(cfgLine, "ROT_CLEAR=", 10)==0)
+						//sscanf(&cfgLine[10], "%d", &cfg->clearScreen);
+						cfg->clearScreen = charToUi(&cfgLine[10]);
+					if (strncmp(cfgLine, "ROT_IDENTITY=", 13)==0)
+						//sscanf(&cfgLine[13], "%d", &cfg->rotateIdentity);
+						cfg->rotateIdentity = charToUi(&cfgLine[13]);
+					if (strncmp(cfgLine, "BTN_ACTIVATION=", 15) == 0)
+						cfg->activationBtn = charToUi(&cfgLine[15]);
+				}
 			}
-			readLine(fd, cfgLine, 100); //should be the distance
 #ifdef DEBUG_MODE
-			sprintf(txt, "next line: %.90s\r\n", cfgLine);
-			debuglog(txt);
-#endif
-			if (strncmp(cfgLine, "ROT_POINT=", 10)==0){
-				sscanf(&cfgLine[10], "%f", &cfg->rotationDistance);
-			}
-			readLine(fd, cfgLine, 100); //should be the clear flag
-#ifdef DEBUG_MODE
-			sprintf(txt, "next line: %.90s\r\n", cfgLine);
-			debuglog(txt);
-#endif
-			if (strncmp(cfgLine, "ROT_CLEAR=", 10)==0){
-				sscanf(&cfgLine[10], "%i", &cfg->clearScreen);
-			}
-#ifdef DEBUG_MODE
-			sprintf(txt, "Rotation:%c, Distance:%f, Clear:%i\r\n", cfg->rotationAxis, cfg->rotationDistance, cfg->clearScreen);
-			debuglog(txt);
+			debuglog("config complete\r\n");
 #endif
 		}
 
-		sceIoClose(fd);
+		ret = sceIoClose(fd);
+#ifdef DEBUG_MODE
+		debuglog("config file closed\r\n");
+#endif
+
 	} else {
 #ifdef DEBUG_MODE
 		debuglog("unable to read config\r\n");
 #endif
-		cfg->rotationAxis = 'Y';
-		cfg->rotationDistance = 7.0f;
 	}
+
+#ifdef DEBUG_MODE
+		sprintf(txt, "Rotation:%c, Distance:%.3f, Angle(rad):%.3f, Clear:%d, Identity:%d, Activation: %X\r\n", cfg->rotationAxis, cfg->rotationDistance, cfg->rotationAngle, cfg->clearScreen, cfg->rotateIdentity, cfg->activationBtn);
+		debuglog(txt);
+#endif
+
 	return 1;
 }

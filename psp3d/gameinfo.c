@@ -25,8 +25,6 @@
 #include <stdio.h>
 #include "debug.h"
 
-#define DEBUG_MODE
-
 typedef struct
 {
     u32 version;       //Should be 0x01010000
@@ -82,8 +80,8 @@ int getGameInfo()
     unsigned paramOffset;
     unsigned iconOffset;
     int fd;
-    int size;
-    int i;
+    int size = 0;
+    int i, ret;
 
     if (!execFile) return -1;
 #ifdef DEBUG_MODE
@@ -96,13 +94,30 @@ int getGameInfo()
     {
 
         i = sceUmdCheckMedium();
+#ifdef DEBUG_MODE
+        char txt[100];
+        sprintf(txt, "UmdCheck:%i\r\n", i);
+        debuglog(txt);
+#endif
         if(i == 0)
         {
-            sceUmdWaitDriveStat(PSP_UMD_PRESENT);
+            ret = sceUmdWaitDriveStat(UMD_WAITFORDISC);
+#ifdef DEBUG_MODE
+        sprintf(txt, "UmdWaitForDisc:%i\r\n", ret);
+        debuglog(txt);
+#endif
         }
-        sceUmdActivate(1, "disc0:"); // Mount UMD to disc0: file system
-        sceUmdWaitDriveStat(UMD_WAITFORINIT);
-        fd = sceIoOpen("disc0:/PSP_GAME/PARAM.SFO", PSP_O_RDONLY, 0777);
+        ret = sceUmdActivate(1, "disc0:"); // Mount UMD to disc0: file system
+#ifdef DEBUG_MODE
+        sprintf(txt, "UmdActivate:%i\r\n", ret);
+        debuglog(txt);
+#endif
+        ret = sceUmdWaitDriveStat(UMD_WAITFORINIT);
+#ifdef DEBUG_MODE
+        sprintf(txt, "UmdWaitForInit:%i\r\n", ret);
+        debuglog(txt);
+#endif
+        fd = sceIoOpen("disc0:/PSP_GAME/PARAM.SFO", PSP_O_RDONLY, 0777); //IOASSIGN_RDONLY
         if (fd < 0){
 #ifdef DEBUG_MODE
     debuglog("unable to open PARAM.SFO\r\n");
