@@ -3,9 +3,11 @@
 
 //debug mode does activate the logging of the function entries
 //to get an idea which order the current game is calling them
-//#define DEBUG_MODE
+#define DEBUG_MODE
+//trace mode does activate logging all GE-List entries
+//this is to get an idea how the current game is using the same
+//#define TRACE_MODE
 
-#include <string.h>
 
 #define LOGFILE "ms0:/psp3d.log"
 

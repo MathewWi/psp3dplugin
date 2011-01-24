@@ -10,6 +10,7 @@
 #include <pspdisplay_kernel.h>
 #include <psputilsforkernel.h>
 #include <pspsysmem_kernel.h>
+#include <pspdebug.h>
 #include <string.h>
 #include <stdio.h>
 #include <malloc.h>
@@ -22,6 +23,7 @@
 /*------------------------------------------------------------------------------*/
 PSP_MODULE_INFO( "psp3d", PSP_MODULE_KERNEL, 1, 1 );//PSP_MODULE_USER, 1, 1);//PSP_MODULE_KERNEL, 1, 1 );
 
+extern configData currentConfig;
 static SceUID MainThreadID = -1;
 void *framebuf = 0;
 char draw3D = 0;
@@ -34,31 +36,35 @@ static int MainThread( SceSize args, void *argp )
 	unsigned int paddata_old = 0;
 	short hooked = 0;
 	int x, y, thread_count_start, thread_count_now;
-	SceUID thread_buf_start[MAX_THREAD], thread_buf_now[MAX_THREAD];
+//	SceUID thread_buf_start[MAX_THREAD], thread_buf_now[MAX_THREAD];
 	SceCtrlData paddata;
 #ifdef DEBUG_MODE
 	debuglog("Plugin started\r\n");
 #endif
 
-	hookDisplay();
-
 #ifdef DEBUG_MODE
 	debuglog("try getting own thread id\r\n");
 #endif
-	SceUID myThread = sceKernelGetThreadId();
-	sceKernelDelayThread(10000);
-#ifdef DEBUG_MODE
-	debuglog("get config\r\n");
+//	SceUID myThread = sceKernelGetThreadId();
+#ifndef DEBUG_MODE
+	readConfigFile(gametitle);
 #endif
-	readConfig(&currentConfig, gametitle);
+	sceKernelDelayThread(10000);
+
+	if (currentConfig.lateHook == 0){
+		hookFunctions();
+		hooked = 1;
+	}
 
 #ifdef DEBUG_MODE
 	debuglog("try getting ThreadmanIdList\r\n");
 #endif
-	sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, thread_buf_start, MAX_THREAD, &thread_count_start);
+//	sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, thread_buf_start, MAX_THREAD, &thread_count_start);
 
 #ifdef DEBUG_MODE
 	debuglog("Start main loop\r\n");
+	//set a default activation button while in debug/trace mode
+	currentConfig.activationBtn = 0x800000; // note key
 #endif
 	
 	while(running)
@@ -71,11 +77,11 @@ static int MainThread( SceSize args, void *argp )
 			if(paddata.Buttons & currentConfig.activationBtn)
 			{
 #ifdef DEBUG_MODE
-				debuglog("ActiavtionButton pressed\n");
+				debuglog("ActivationButton pressed\n");
 #endif
 
 				// IdList Now
-				sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, thread_buf_now, MAX_THREAD, &thread_count_now);
+//				sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, thread_buf_now, MAX_THREAD, &thread_count_now);
 /*
 				//hold all threads for a moment
 				for(x = 0; x < thread_count_now; x++)
@@ -99,22 +105,33 @@ static int MainThread( SceSize args, void *argp )
 
 				}
 	*/
-/*				if (hooked == 0){
-//					hookDisplay();
-#ifdef DEBUG_MODE
-	debuglog("get config\r\n");
-#endif
-	readConfig(&currentConfig, gametitle);
+//#ifdef DEBUG_MODE
+
+				if (hooked == 0){
+					hookFunctions();
+/*
+					debuglog("get config\r\n");
+					readConfigFile(gametitle);
+					*/
 					hooked = 1;
-					sceKernelDelayThread(10000);
+//					debuglog("config ready\r\n");
+					//sceKernelDelayThread(10000);
 				}
-*/
+//#endif
+
 				//can parse command list
 				if (draw3D == 0){
+#ifdef DEBUG_MODE
+					debuglog("initiate render3D\r\n");
+#endif
 					draw3D = 1;
 				}
-				else
+				else{
+#ifdef DEBUG_MODE
+					debuglog("stop render3D\r\n");
+#endif
 					draw3D = 9;
+				}
 
 				/*
 				//resume all threads
@@ -145,7 +162,7 @@ static int MainThread( SceSize args, void *argp )
 	}
 
 	//after leaving, unhook...
-	unhook_display();
+	//unhookFunctions();
 
 	return( 0 );
 }

@@ -70,8 +70,8 @@ int psfGetKey(const char * keyName, const char * data, char * value)
     return -2;
 }
 
-char gameid[16];
-char gametitle[256];
+char gameid[16] = "\0";
+char gametitle[256] = "\0";
 
 int getGameInfo()
 {

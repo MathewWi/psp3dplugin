@@ -1,20 +1,24 @@
 #include <pspiofilemgr.h>
+#include <pspsysmem.h>
 #include <stdio.h>
 #include "debug.h"
 
-//#define LOG_STDOUT
+#define LOG_STDOUT
 
 int debuglog(const char * string)
 {
   // Append Data
 #ifdef LOG_STDOUT
-	return printf(string);
+	#define PSPLINK_OUT 1
+
+	sceIoWrite(PSPLINK_OUT, string, strlen(string));
+	return 0;//fprintf (stdout,string);
 	//return strlen(string);
 #else
   return appendBufferToFile(LOGFILE, (void*)string, strlen(string));
 #endif
 }
-
+#ifndef LOG_STDOUT
 int appendBufferToFile(const char * path, void * buffer, int buflen)
 {
   // Written Bytes
@@ -35,3 +39,4 @@ int appendBufferToFile(const char * path, void * buffer, int buflen)
   // Return Written Bytes
   return written;
 }
+#endif

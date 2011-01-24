@@ -27,6 +27,8 @@
 #include "config.h"
 #include "debug.h"
 
+configData currentConfig;
+
 short isNumber(const char z){
 	if (z == '0') return 0;
 	if (z == '1') return 1;
@@ -63,7 +65,6 @@ float charToF(const char* text){
 	unsigned int expo = 0;
 	short num;
 	unsigned short i;
-	char txt[100];
 
 	for (i = 0;i<strlen(text);i++){
 		num = isNumber(text[i]);
@@ -93,7 +94,6 @@ float charToF(const char* text){
 }
 
 unsigned int readLine(int fd, char* buffer, short width){
-
 	unsigned int byte = 0;
 	short endl = 0;
 	while (!endl){
@@ -113,86 +113,154 @@ unsigned int readLine(int fd, char* buffer, short width){
 			endl = 1;
 		}
 	}
-
 	return byte;
 }
 
-int readConfig(configData* cfg, const char* gameTitle){
+int readConfigFile(const char* gameTitle){
 	int fd, bytes, ret;
 #ifdef DEBUG_MODE
 	char txt[150];
 #endif
-	char cfgLine[110];
+	char cfgLine[60];
 	short sectionFound = 0;
+	short defaultFound = 0;
 	short feof = 0;
 // set default values in case there are sections missing in the file or it could
 // not be read proberbly
-	cfg->rotationAxis = 'Y';
-	cfg->rotationDistance = 7.0f;
-	cfg->rotationAngle = 3.5f;
-	cfg->clearScreen = 1;
-	cfg->rotateIdentity = 1;
-	cfg->activationBtn = 0x800000; //PSP_CTRL_NOTE
+	//currentConfig.rotationAxis = 'Y';//'Y';
+	currentConfig.rotationDistance = 0.0f;//9.0f;
+	currentConfig.rotationAngle = 0.75f*GU_PI/180.0f;
+	currentConfig.clearScreen = 0;
+	currentConfig.rotateIdentity = 1;
+	currentConfig.needStage1 = 1;
+	currentConfig.addViewMtx = 0;
+	currentConfig.keepPixelmaskOrigin = 0;
+	currentConfig.lateHook = 0;
+	currentConfig.activationBtn = 0x800000; //PSP_CTRL_NOTE
+	currentConfig.color1 = 0x00ff00;//0x0000ff;
+	currentConfig.color2 = 0xff00ff;//0xffff00;
 
 	fd = sceIoOpen("ms0:/seplugins/psp3d.cfg",PSP_O_RDONLY, 0777);
+	//fd = -1;
+	int i;
 	if (fd >= 0){
-		//read the next line of the file, until we have found the
-		//right game section
-		while (!sectionFound && !feof){
-			if (readLine(fd, cfgLine, 100) == 0){
-				feof = 1;
-			} else {
-				if (cfgLine[0] == '['){
-					//this is the start character of the section, ] indicates
-					//the end and in between we do have the name
-					if (strncmp(&cfgLine[1], gameTitle, strlen(cfgLine)-2) == 0
-						|| strncmp(&cfgLine[1], "DEFAULT", strlen(cfgLine)-2) == 0){
-						sectionFound = 1;
-					}
-				}
-			}
-		}
-		// we know the section the config data is stored
-		if (sectionFound){
-#ifdef DEBUG_MODE
-			sprintf(txt, "SectionFound: %.30s\r\n", cfgLine);
-			debuglog(txt);
-#endif
-			//extract the necessary data
-			while (!feof){
-				bytes = readLine(fd, cfgLine, 100); //should be the axis
-				if (bytes == 0 || cfgLine[0] == '['){
-					feof = 1;
-				}else{
-#ifdef DEBUG_MODE
-					sprintf(txt, "Current Line: %.50s\r\n", cfgLine);
-					debuglog(txt);
-#endif
 
-					if (strncmp(cfgLine, "ROT_AXIS=", 9) == 0)
-						cfg->rotationAxis = cfgLine[9];
-					if (strncmp(cfgLine, "ROT_POINT=", 10)==0)
-						//sscanf(&cfgLine[10], "%f", &cfg->rotationDistance);
-						cfg->rotationDistance = charToF(&cfgLine[10]);
-						//cfg->rotationDistance = 8.0f;
-					if (strncmp(cfgLine, "ROT_ANGLE=", 10)==0){
-						//sscanf(&cfgLine[10], "%f", &cfg->rotationAngle);
-						cfg->rotationAngle = charToF(&cfgLine[10]);
-						cfg->rotationAngle = cfg->rotationAngle*GU_PI/180.0f;
+		//get the section at least 3 times
+		//first: default
+		//second: game specific
+		for (i=0;i<2;i++){
+			//read the next line of the file, until we have found the
+			//right game section
+			while (!sectionFound && !feof){
+				if (readLine(fd, cfgLine, 50) == 0){
+					feof = 1;
+				} else {
+					if (cfgLine[0] == '['){
+						//this is the start character of the section, ] indicates
+						//the end and in between we do have the name
+						if (strncmp(&cfgLine[1], gameTitle, strlen(cfgLine)-2) == 0) {
+							sectionFound = 1;
+							defaultFound = 0;
+						} else if (strncmp(&cfgLine[1], "DEFAULT", strlen(cfgLine)-2) == 0){
+							sectionFound = 1;
+							defaultFound = 1;
+						}
 					}
-					if (strncmp(cfgLine, "ROT_CLEAR=", 10)==0)
-						//sscanf(&cfgLine[10], "%d", &cfg->clearScreen);
-						cfg->clearScreen = charToUi(&cfgLine[10]);
-					if (strncmp(cfgLine, "ROT_IDENTITY=", 13)==0)
-						//sscanf(&cfgLine[13], "%d", &cfg->rotateIdentity);
-						cfg->rotateIdentity = charToUi(&cfgLine[13]);
-					if (strncmp(cfgLine, "BTN_ACTIVATION=", 15) == 0)
-						cfg->activationBtn = charToUi(&cfgLine[15]);
 				}
 			}
+			// we know the section the config data is stored
+			if (sectionFound){
+	#ifdef DEBUG_MODE
+				sprintf(txt, "SectionFound: %.30s\r\n", cfgLine);
+				debuglog(txt);
+	#endif
+				//extract the necessary data
+				while (!feof){
+					bytes = readLine(fd, cfgLine, 50);
+					if (bytes == 0 || cfgLine[0] == '['){
+						feof = 1;
+					}else{
+			#ifdef DEBUG_MODE
+						sprintf(txt, "Current Line: %.50s\r\n", cfgLine);
+						debuglog(txt);
+			#endif
+
+						//if (strncmp(cfgLine, "ROT_AXIS=", 9) == 0)
+							//currentConfig.rotationAxis = cfgLine[9];
+						if (strncmp(cfgLine, "ROT_POINT=", 10)==0)
+							//sscanf(&cfgLine[10], "%f", &currentConfig.rotationDistance);
+							currentConfig.rotationDistance = charToF(&cfgLine[10]);
+							//currentConfig.rotationDistance = 8.0f;
+						if (strncmp(cfgLine, "ROT_ANGLE=", 10)==0){
+							//sscanf(&cfgLine[10], "%f", &currentConfig.rotationAngle);
+							currentConfig.rotationAngle = charToF(&cfgLine[10]);
+							currentConfig.rotationAngle = currentConfig.rotationAngle*GU_PI/180.0f;
+						}
+						if (strncmp(cfgLine, "ROT_CLEAR=", 10)==0)
+							//sscanf(&cfgLine[10], "%d", &currentConfig.clearScreen);
+							currentConfig.clearScreen = charToUi(&cfgLine[10]);
+
+						if (strncmp(cfgLine, "PIXELMASK=", 10)==0)
+							//sscanf(&cfgLine[10], "%d", &currentConfig.clearScreen);
+							currentConfig.keepPixelmaskOrigin = charToUi(&cfgLine[10]);
+
+						if (strncmp(cfgLine, "STAGE1=", 7)==0)
+							//sscanf(&cfgLine[10], "%d", &currentConfig.clearScreen);
+							currentConfig.needStage1 = charToUi(&cfgLine[7]);
+
+						if (strncmp(cfgLine, "LATEHOOK=", 9)==0)
+							//sscanf(&cfgLine[10], "%d", &currentConfig.clearScreen);
+							currentConfig.lateHook = charToUi(&cfgLine[9]);
+
+						if (strncmp(cfgLine, "ROT_IDENTITY=", 13)==0)
+							//sscanf(&cfgLine[13], "%d", &currentConfig.rotateIdentity);
+							currentConfig.rotateIdentity = charToUi(&cfgLine[13]);
+						if (strncmp(cfgLine, "BTN_ACTIVATION=", 15) == 0)
+							currentConfig.activationBtn = charToUi(&cfgLine[15]);
+						if (strncmp(cfgLine, "COLOR_MODE=", 11) == 0){
+							switch (cfgLine[11]){
+							case 'R':
+								currentConfig.color1 = 0x0000ff;
+								currentConfig.color2 = 0xffff00;
+								break;
+							case 'G':
+								currentConfig.color1 = 0xff00ff;
+								currentConfig.color2 = 0x00ff00;
+								break;
+							case 'Y':
+								currentConfig.color1 = 0xff0000;
+								currentConfig.color2 = 0x00ffff;
+								break;
+							}
+						}
+
+					}
+				}
+	#ifdef DEBUG_MODE
+				debuglog("config complete\r\n");
+	#endif
+			}
+			if (feof && bytes == 0){
 #ifdef DEBUG_MODE
-			debuglog("config complete\r\n");
+			debuglog("file end reached\r\n");
 #endif
+				//we've already come to file end...leave..
+				i = 2;
+			} else if (defaultFound == 1){
+#ifdef DEBUG_MODE
+			debuglog("default section found...try 2nd time game\r\n");
+#endif
+				//default section found, continue reading
+				feof = 0;
+				sectionFound = 0;
+				defaultFound = 0;
+			} else if (sectionFound == 1) {
+				//real section found...leave...
+#ifdef DEBUG_MODE
+			debuglog("game specific - all ready..\r\n");
+#endif
+				i = 2;
+			}
 		}
 
 		ret = sceIoClose(fd);
@@ -207,9 +275,11 @@ int readConfig(configData* cfg, const char* gameTitle){
 	}
 
 #ifdef DEBUG_MODE
-		sprintf(txt, "Rotation:%c, Distance:%.3f, Angle(rad):%.3f, Clear:%d, Identity:%d, Activation: %X\r\n", cfg->rotationAxis, cfg->rotationDistance, cfg->rotationAngle, cfg->clearScreen, cfg->rotateIdentity, cfg->activationBtn);
+//		char txt[150];
+		sprintf(txt, "Rot-Distance:%.3f, Angle(rad):%.3f, Clear:%d, Identity:%d, Activation: %X\r\n", currentConfig.rotationDistance, currentConfig.rotationAngle, currentConfig.clearScreen, currentConfig.rotateIdentity, currentConfig.activationBtn);
 		debuglog(txt);
 #endif
 
 	return 1;
 }
+

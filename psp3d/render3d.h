@@ -1,5 +1,5 @@
 /*
- * config.h
+ * render3d.h
  *
   *
  * Copyright (C) 2010 André Borrmann
@@ -19,24 +19,13 @@
  *
  */
 
-#ifndef CONFIG_H_
-#define CONFIG_H_
+#ifndef RENDER3D_H_
+#define RENDER3D_H_
 
-typedef struct {
-	unsigned int color1;
-	unsigned int color2;
-	unsigned int clearScreen;
-	unsigned int rotateIdentity;
-	unsigned int needStage1;
-	unsigned int activationBtn;
-	unsigned int addViewMtx;
-	unsigned int keepPixelmaskOrigin;
-	unsigned int lateHook;
-	float rotationDistance;
-	float rotationAngle;
-	//char rotationAxis;
-}configData;
+extern void hookFunctions( void );
+extern void unhookFunctions(void);
+//extern int can_parse;
+extern char draw3dState;
 
-extern int readConfigFile(const char* gameTitle);
 
-#endif /* CONFIG_H_ */
+#endif /* RENDER3D_H_ */
