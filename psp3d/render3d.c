@@ -471,7 +471,7 @@ static void Rotate3D(ScePspFMatrix4* view, float angle){
 	//but why does this cause any issue there...
 	//the screen is streched on the up-directison on the screen and a bit moved
 	//to the right...looks pretty strange...
-	if (currentConfig.rotateIdentity == 0){
+/*	if (currentConfig.rotateIdentity == 0){
 #ifdef DEBUG_MODE
 			debuglog("don't rotate identity\r\n");
 #endif
@@ -482,6 +482,7 @@ static void Rotate3D(ScePspFMatrix4* view, float angle){
 			return;
 		}
 	}
+	*/
 	/*
 	 * 49CF6378:ViewMatrix Item 0.0000x
 49CF637C:ViewMatrix Item 0.0000y
@@ -993,9 +994,9 @@ void Render3dStage2(unsigned int* currentList){
 						//4. reset clear flag
 						//as we would like to prevent the list from clearing
 						//we set some of the steps to be NOP ...
-						if (manipulate == 1){
+//						if (manipulate == 1){
 							(*list) &= ((unsigned int) (0xD3 << 24) | (((GU_DEPTH_BUFFER_BIT | GU_STENCIL_BUFFER_BIT) << 8) | 0x01)); //clear flag -> prevent color clear!
-						} //if manipulate == 1
+//						} //if manipulate == 1
 						clearCount++;
 
 						break;
@@ -1282,14 +1283,13 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 		//in case Enqueue is called more than once while one draw pass is executed
 		//we check for the flag drawSync which is set once the last draw has finished
 		local_list_s = (unsigned int*) (((unsigned int) geList3D[0]) | 0x40000000);
-		listId = sceGeListEnQueue_Func(local_list_s, local_list_s, cbid, arg);
+		listId = sceGeListEnQueue_Func(local_list_s, local_list_s, 0,0);
 		//prepare 3d-render: clear screen and set pixel mask - do not write red
 		local_list_s = prepareRender3D(listId, local_list_s, state-1, currentConfig.color1, currentConfig.clearScreen, 0);
 		sceGeListUpdateStallAddr_Func(listId, local_list_s);
-		sceGeListSync_Func(listId, 0);
+		//sceGeListSync_Func(listId, 0);
 
 		if (stall == 0){
-
 			listPassedComplete = 1;
 			//now manipulate the GE list to change the view-Matrix
 			numerek++;
@@ -1307,18 +1307,25 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 			//pass current list to hardware and wait until it was processed
 
 			listId = sceGeListEnQueue_Func(MYlocal_list, 0, cbid, arg);
-			sceGeListSync_Func(listId, 0);
+			//sceGeListSync_Func(listId, 0);
 
 			local_list_s = (unsigned int*) (((unsigned int) geList3D[1]) | 0x40000000);
 			listId = sceGeListEnQueue_Func(local_list_s, local_list_s, cbid, arg);
 
 			local_list_s = prepareRender3D(listId, local_list_s, state-1, currentConfig.color2, 0, 1);
 			sceGeListUpdateStallAddr_Func(listId, local_list_s);
-			sceGeListSync_Func(listId, 0);
+			//sceGeListSync_Func(listId, 0);
 			// do the second run
 			//make sure there is nothing located in the cache
 			sceKernelDcacheWritebackInvalidateAll();
+			frameBuffCount = 0;
+			viewMatrixCount = 0;
+			clearCount = 0;
 			Render3dStage2(MYlocal_list);
+#ifdef DEBUG_MODE
+		sprintf(text, "viewCount: %d, frameBuffCount: %d, clearCount: %d\r\n", viewMatrixCount, frameBuffCount, clearCount);
+		debuglog(text);
+#endif
 
 			//make sure there is nothing located in the cache
 			sceKernelDcacheWritebackInvalidateAll();
@@ -1341,7 +1348,7 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 		debuglog("GeListEnqueue - draw3D 9\r\n");
 #endif
 		local_list_s = (unsigned int*) (((unsigned int) geList3D[0])| 0x40000000);
-		listId = sceGeListEnQueue_Func(local_list_s, local_list_s, cbid, arg);
+		listId = sceGeListEnQueue_Func(local_list_s, local_list_s, 0, 0);
 
 		local_list_s = prepareRender3D(listId, local_list_s, 1, 0x000000, 0, 0);
 		sceGeListUpdateStallAddr_Func(listId, local_list_s);
@@ -1428,10 +1435,10 @@ int sceGeDrawSync3D(int syncType) {
 		sprintf(text, "pass last list after stall 2nd time %X\r\n", (unsigned int)MYlocal_list);
 		debuglog(text);
 #endif
-/*		unsigned int * local_list_s = (unsigned int*) (((unsigned int) geList3D[1])| 0x40000000);
+		unsigned int * local_list_s = (unsigned int*) (((unsigned int) geList3D[1])| 0x40000000);
 		int listId = sceGeListEnQueue_Func(local_list_s, local_list_s, 0, 0);
 		//set pixel mask and clear screen if necessary - do not draw cyan
-		local_list_s = prepareRender3D(listId, local_list_s, state - 1, currentConfig.color2, 1, 1);
+		local_list_s = prepareRender3D(listId, local_list_s, state - 1, currentConfig.color2, 0, 1);
 		sceGeListUpdateStallAddr_Func(listId, local_list_s);
 
 		manipulate = 0;
@@ -1455,7 +1462,7 @@ int sceGeDrawSync3D(int syncType) {
 		//sceGeListSync_Func(listId, 0);
 
 		//listPassedComplete = 1;
-	*/
+
 	}
 	pspSdkSetK1(k1);
 	int ret = sceGeDrawSync_Func(syncType);

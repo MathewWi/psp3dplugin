@@ -130,7 +130,7 @@ int readConfigFile(const char* gameTitle){
 	//currentConfig.rotationAxis = 'Y';//'Y';
 	currentConfig.rotationDistance = 0.0f;//9.0f;
 	currentConfig.rotationAngle = 0.75f*GU_PI/180.0f;
-	currentConfig.clearScreen = 0;
+	currentConfig.clearScreen = 1;
 	currentConfig.rotateIdentity = 1;
 	currentConfig.needStage1 = 1;
 	currentConfig.addViewMtx = 0;

@@ -46,9 +46,9 @@ static int MainThread( SceSize args, void *argp )
 	debuglog("try getting own thread id\r\n");
 #endif
 //	SceUID myThread = sceKernelGetThreadId();
-#ifndef DEBUG_MODE
+//#ifdef DEBUG_MODE
 	readConfigFile(gametitle);
-#endif
+//#endif
 	sceKernelDelayThread(10000);
 
 	if (currentConfig.lateHook == 0){
