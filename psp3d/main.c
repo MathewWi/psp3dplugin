@@ -11,6 +11,7 @@
 #include <psputilsforkernel.h>
 #include <pspsysmem_kernel.h>
 #include <pspdebug.h>
+#include <pspgu.h>
 #include <string.h>
 #include <stdio.h>
 #include <malloc.h>
@@ -18,6 +19,7 @@
 #include "debug.h"
 #include "gameinfo.h"
 #include "config.h"
+#include "render3d.h"
 /*------------------------------------------------------------------------------*/
 /* module info																	*/
 /*------------------------------------------------------------------------------*/
@@ -35,17 +37,13 @@ static int MainThread( SceSize args, void *argp )
 {
 	unsigned int paddata_old = 0;
 	short hooked = 0;
-	int x, y, thread_count_start, thread_count_now;
-//	SceUID thread_buf_start[MAX_THREAD], thread_buf_now[MAX_THREAD];
+	char noteHandled = 0;
+//	char txt[100];
 	SceCtrlData paddata;
 #ifdef DEBUG_MODE
 	debuglog("Plugin started\r\n");
 #endif
 
-#ifdef DEBUG_MODE
-	debuglog("try getting own thread id\r\n");
-#endif
-//	SceUID myThread = sceKernelGetThreadId();
 //#ifdef DEBUG_MODE
 	readConfigFile(gametitle);
 //#endif
@@ -57,14 +55,9 @@ static int MainThread( SceSize args, void *argp )
 	}
 
 #ifdef DEBUG_MODE
-	debuglog("try getting ThreadmanIdList\r\n");
-#endif
-//	sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, thread_buf_start, MAX_THREAD, &thread_count_start);
-
-#ifdef DEBUG_MODE
 	debuglog("Start main loop\r\n");
 	//set a default activation button while in debug/trace mode
-	currentConfig.activationBtn = 0x800000; // note key
+	currentConfig.activationBtn = 0x400000; // screen key
 #endif
 	
 	while(running)
@@ -73,38 +66,43 @@ static int MainThread( SceSize args, void *argp )
 		
 		if(paddata.Buttons != paddata_old)
 		{
+			/*
+			 * special keys to change behavior of plugin
+			 */
+			if (draw3D == 3){
+				noteHandled = 0;
+				//sprintf(txt, "Buttons : %X\r\n", paddata.Buttons);
+				//debuglog(txt);
+				if ((paddata.Buttons & 0xffffff) == (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER | PSP_CTRL_LEFT))
+					currentConfig.rotationAngle -= 0.5f*GU_PI/180.0f;
+				if ((paddata.Buttons & 0xffffff) == (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER | PSP_CTRL_RIGHT))
+					currentConfig.rotationAngle += 0.5f*GU_PI/180.0f;
+
+				if ((paddata.Buttons & 0xffffff) == (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER | PSP_CTRL_UP))
+					currentConfig.rotationDistance -= 2.0f;
+				if ((paddata.Buttons & 0xffffff) == (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER | PSP_CTRL_DOWN))
+					currentConfig.rotationDistance += 2.0f;
+
+				if ((paddata.Buttons & 0xffffff) == (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER | currentConfig.activationBtn)){
+					if (currentConfig.color1 == 0x0000ff){
+						currentConfig.color1 = 0xff00ff;
+						currentConfig.color2 = 0x00ff00;
+					}else if (currentConfig.color1 == 0xff00ff){
+						currentConfig.color1 = 0xff0000;
+						currentConfig.color2 = 0x00ffff;
+					} else if (currentConfig.color1 == 0xff0000){
+						currentConfig.color1 = 0x0000ff;
+						currentConfig.color2 = 0xffff00;
+					}
+					noteHandled = 1;
+				}
+			}
 			//press "note" button and magick begin
-			if(paddata.Buttons & currentConfig.activationBtn)
+			if(paddata.Buttons & currentConfig.activationBtn && noteHandled == 0)
 			{
 #ifdef DEBUG_MODE
 				debuglog("ActivationButton pressed\n");
 #endif
-
-				// IdList Now
-//				sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, thread_buf_now, MAX_THREAD, &thread_count_now);
-/*
-				//hold all threads for a moment
-				for(x = 0; x < thread_count_now; x++)
-				{
-					// thread id match 0 or 1
-					unsigned char match = 0;
-					SceUID tmp_thid = thread_buf_now[x];
-					for(y = 0; y < thread_count_start; y++)
-					{
-						if((tmp_thid == thread_buf_start[y]) || (tmp_thid == myThread))
-						{
-							match = 1;
-							y = thread_count_start;
-						}
-					}
-					if(thread_count_start == 0) match = 1;
-					if(match == 0)
-					{
-						sceKernelSuspendThread(tmp_thid);
-					}
-
-				}
-	*/
 //#ifdef DEBUG_MODE
 
 				if (hooked == 0){
@@ -132,29 +130,6 @@ static int MainThread( SceSize args, void *argp )
 #endif
 					draw3D = 9;
 				}
-
-				/*
-				//resume all threads
-				for(x = 0; x < thread_count_now; x++)
-				{
-					// thread id match 0 or 1
-					unsigned char match = 0;
-					SceUID tmp_thid = thread_buf_now[x];
-					for(y = 0; y < thread_count_start; y++)
-					{
-						if((tmp_thid == thread_buf_start[y]) || (tmp_thid == myThread))
-						{
-							match = 1;
-							y = thread_count_start;
-						}
-					}
-					if(thread_count_start == 0) match = 1;
-					if(match == 0)
-					{
-						sceKernelResumeThread(tmp_thid);
-					}
-				}
-				*/
 			}
 		}
 		paddata_old = paddata.Buttons;

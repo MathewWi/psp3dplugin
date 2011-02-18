@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include "debug.h"
 
-#define LOG_STDOUT
+//#define LOG_STDOUT
 
 int debuglog(const char * string)
 {

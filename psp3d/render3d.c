@@ -26,7 +26,7 @@
 #include <pspgum.h>
 #include <psptypes.h>
 #include <stdio.h>
-#include <config.h>
+#include "config.h"
 //#include <pspge.h>
 //#define TRACE_VIEW_MODE
 #define ERROR_LOG
@@ -73,13 +73,6 @@ extern configData currentConfig;
 extern char draw3D;
 
 #define BUFF_SIZE 100 // size of the own GE Displaylist buffer
-
-enum eRotationAxis{
-	ERA_Y = 'Y',
-    ERA_X = 'X',
-    ERA_Z = 'Z'
-} eRotationAxis;
-
 /* Data declaration to support the stuff */
 static int numerek = 0;
 
@@ -131,6 +124,9 @@ unsigned int getFrameBuffCount = 0;
 short frameBuffCount = 0;
 short viewMatrixCount = 0;
 short clearCount = 0;
+short pixelSize = 0;
+short pixelMaskCount = 0;
+unsigned char drawSync = 0;
 /*
  * do the tracing stuff on a display list. All possible commands are listed
  * here and written to the logfile
@@ -353,7 +349,6 @@ unsigned int baseOffset = 0;
 char handleDefaultGeCmd(unsigned int** geList){
 	int command = 0;
 	unsigned int argument = 0;
-	char txt[100];
 
 	command = (**geList) >> 24;
 	argument = (**geList) & 0xffffff;
@@ -370,10 +365,14 @@ char handleDefaultGeCmd(unsigned int** geList){
 			(*geList) = (unsigned int*) (npc | 0x40000000);
 			break;
 		case 0x09:
-			sprintf(txt, "conditional jump:%X-%X | base=%X\r\n", (unsigned int)(*geList), (unsigned int)(**geList), base);
-			debuglog(txt);
+			//sprintf(txt, "conditional jump:%X-%X | base=%X\r\n", (unsigned int)(*geList), (unsigned int)(**geList), base);
+			//debuglog(txt);
 			//conditional jump - not implemented yet
-			(*geList)++;
+			//just do the jump...
+			npc = ((base | argument) + baseOffset) & 0xFFFFFFFC;
+			//jump to new address
+			(*geList) = (unsigned int*) (npc | 0x40000000);
+			//(*geList)++;
 			break;
 		case 0x10:
 			//base address
@@ -537,7 +536,7 @@ static void Rotate3D(ScePspFMatrix4* view, float angle){
 	// TEST start: don't rotate a fixed world axis, but rotate around the view-matrix UP-vector (Y-Axis)
 	// as the viewmatrix might be already rotated on 1 or more axis
 	//setup the rotation matrix
-	float rSin, rCos,r1Cos, roll;
+	float rSin, rCos,r1Cos;//, roll;
 	rSin = sinf(angle);
 	rCos = cosf(angle);
 	r1Cos = 1 - rCos;
@@ -579,6 +578,7 @@ void traceGeList(unsigned int* currentList){
 
 	short parse = 1;
 	unsigned int *list;
+	unsigned int vbase;
 	int command = 0;
 	unsigned int argument = 0;
 
@@ -595,10 +595,16 @@ void traceGeList(unsigned int* currentList){
 	debuglog(txt);
 
 	base = 0;
+	void* vertex;
 	adress_number = 0; //reset address counter for call's/jumps in display list
 	baseOffset = 0;
-	//make sure nothing of the GE list is sitting somewhere in the cache...
-	sceKernelDcacheWritebackInvalidateAll();
+	unsigned short v;
+	typedef struct ColorIVertex{
+		u32 color;
+		u16 x, y, z;
+		u16 pad;
+	} ColorIVertex;
+
 	while (parse){
 		traceGeCmd(list);
 
@@ -609,9 +615,45 @@ void traceGeList(unsigned int* currentList){
 
 			if (command != 12){
 				switch (command){
+				case 0x9c:
+					sprintf(txt,"Framebuffer:%X\r\n", *list);
+					debuglog(txt);
+					break;
+				case 0x9d:
+					sprintf(txt,"Framewidth:%X\r\n", *list);
+					debuglog(txt);
+					break;
+				case 0x9e:
+					sprintf(txt,"Depthbuffer:%X\r\n", *list);
+					debuglog(txt);
+					break;
+				case 0x9f:
+					sprintf(txt,"DepthbufferWidth:%X\r\n", *list);
+					debuglog(txt);
+					break;
+				case 0xd2:
+					sprintf(txt,"Pixelformat:%X\r\n", *list);
+					debuglog(txt);
+					break;
 				case 0x3c:
 					//view matrix strobe
 					sprintf(txt, "ViewMatrix : %X\r\n", (*list));
+					debuglog(txt);
+					break;
+				case 0x10:
+					vbase = (argument << 8) & 0xff000000;
+					break;
+				case 0x01:
+					vertex = (void*)((unsigned int)vbase | argument);
+					break;
+				case 0x04:
+					sprintf(txt, "Vertex-Data at:%X, count: %d\r\n", vertex, argument & 0xffff);
+					debuglog(txt);
+					ColorIVertex* vt = (ColorIVertex*)vertex;
+					sprintf(txt, "Vertexdata color, x, y, z, pad:%X, %x,%x,%x, %X\r\n", vt->color, vt->x, vt->y, vt->z, vt->pad);
+					debuglog(txt);
+					vt++;
+					sprintf(txt, "Vertexdata color, x, y, z, pad:%X, %x,%x,%x, %X\r\n", vt->color, vt->x, vt->y, vt->z, vt->pad);
 					debuglog(txt);
 					break;
 				}
@@ -682,6 +724,7 @@ void Render3dStage1(unsigned int* currentList){
 
 					case 0xe8:
 						//prevent pixelmask settings as they "destroy" the 3D renderings
+						pixelMaskCount++;
 						if (manipulate == 1 && currentConfig.keepPixelmaskOrigin == 0){
 							(*list) = 0x0;//(unsigned int) (0xE8 << 24) | (currentConfig.color1);
 						}
@@ -790,12 +833,14 @@ void Render3dStage2(unsigned int* currentList){
 						break;
 					case 0xe8:
 						//prevent pixelmask settings as they "destroy" the 3D renderings
+						pixelMaskCount++;
 						if (manipulate == 1 && currentConfig.keepPixelmaskOrigin == 0){
 							(*list) = 0x0;//(unsigned int) (0xE8 << 24) | (currentConfig.color2);
 						}
 						break;
 					case 0xe9:
 						//pixelmask alpha
+						pixelMaskCount++;
 						//prevent pixelmask settings as they "destroy" the 3D renderings
 						if (manipulate == 1 && currentConfig.keepPixelmaskOrigin == 0){
 							(*list) = 0x0;//(unsigned int) (0xE9 << 24) | (0x0); //NOP
@@ -907,7 +952,11 @@ void Render3dStage2(unsigned int* currentList){
 						viewMatrixCount++;
 						break;
 					case 0x3d:
-						if (manipulate == 1){
+						//some games need to rotate while offscreen drawing
+						if ((manipulate == 0 && currentConfig.rotAllTime == 2)
+							|| (manipulate == 1 && currentConfig.rotAllTime == 0)
+							|| currentConfig.rotAllTime == 1){
+						//if (manipulate == 1 || currentConfig.rotAllTime == 1){
 							//store the address to the viewMatrix-Data
 							cmdViewMatrix[viewItem] = list;
 							//view matrix upload
@@ -983,7 +1032,7 @@ void Render3dStage2(unsigned int* currentList){
 								(*cmdViewMatrix[11]) = (unsigned int) (command << 24)
 										| (((*((u32*) &view.w.z)) >> 8) & 0xffffff);
 							}
-						} //if manipulate
+						} //if manipulate || rotAllTime
 						break;
 					case 0xd3:
 						//clear flags
@@ -994,9 +1043,9 @@ void Render3dStage2(unsigned int* currentList){
 						//4. reset clear flag
 						//as we would like to prevent the list from clearing
 						//we set some of the steps to be NOP ...
-//						if (manipulate == 1){
+						//if (manipulate == 1){
 							(*list) &= ((unsigned int) (0xD3 << 24) | (((GU_DEPTH_BUFFER_BIT | GU_STENCIL_BUFFER_BIT) << 8) | 0x01)); //clear flag -> prevent color clear!
-//						} //if manipulate == 1
+						//} //if manipulate == 1
 						clearCount++;
 
 						break;
@@ -1036,6 +1085,7 @@ int sceGeListUpdateStallAddr3D(int qid, void *stall) {
 	int ret;
 
 	if (draw3D == 3) {
+//		traceGeList(MYlocal_list);
 		//while update stall is called we do the 3D-Stage1
 		if (currentConfig.needStage1 == 1){
 			//make sure there is nothing located in the cache
@@ -1054,7 +1104,7 @@ int sceGeListUpdateStallAddr3D(int qid, void *stall) {
 /*
  * setup an own display list to clear the whole screen
  */
-unsigned int* clearScreen(unsigned int* geList, int listId) {
+unsigned int* clearScreen(unsigned int* geList, int listId, unsigned int clearFlags) {
 
 	unsigned int* local_list = geList;
 	struct Vertex* vertices;
@@ -1085,15 +1135,27 @@ unsigned int* clearScreen(unsigned int* geList, int listId) {
 	//pass to GE
 //	sceGeListUpdateStallAddr_Func(listId, local_list);
 
-	vertices[0].color = 0x0;
-	vertices[0].x = 0;
-	vertices[0].y = 0;
+	vertices[0].color = 0x00000000;//0xffff0000;
+	vertices[0].x = 0x0;
+	vertices[0].y = 0x0;
 	vertices[0].z = 0x0;
+	//vertices[0].pad = 0xffff;
 
-	vertices[1].color = 0x0;
-	vertices[1].x = 480;
+/*	//stencil position for clear as part of color depend on pixel size
+	unsigned int filter;
+	switch (pixelSize){
+	case 0: filter = 0x0; break;              //PixelFormat: 5650 ?
+	case 1: filter = 0x0 | 0xff << 31; break; //PixelFormat: 5551?
+	case 2: filter = 0x0 | 0xff << 28; break; //PixelFormat: 4444 ?
+	case 3: filter = 0x0 | 0xff << 24; break; //PixelFormat: 8888 ?
+	default: filter = 0x0;break;
+	}
+	*/
+	vertices[1].color = 0x00000000;//0xffff0110;//0x9c000200;
+	vertices[1].x = 512;
 	vertices[1].y = 272;
-	vertices[1].z = 0x0;
+	vertices[1].z = 0xffff;
+	//vertices[1].pad = 0xffff;
 	//reset pixel mask
 	(*local_list) = (unsigned int) (0xE8 << 24) | (0x000000);
 	local_list++;
@@ -1101,13 +1163,11 @@ unsigned int* clearScreen(unsigned int* geList, int listId) {
 	(*local_list) = (unsigned int) (0xE9 << 24) | (0x000000);
 	local_list++;
 	//start clear: setting clear flag
-	(*local_list) = (unsigned int) (0xD3 << 24) | (((GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT) << 8)
-			| 0x01);
+	(*local_list) = (unsigned int) (0xD3 << 24) | ((clearFlags << 8) | 0x01);
 	local_list++;
 
 	//set vertex type
-	(*local_list) = (unsigned int) (18 << 24) | (GU_COLOR_8888
-			|GU_VERTEX_16BIT | GU_TRANSFORM_2D);
+	(*local_list) = (unsigned int) (18 << 24) | (GU_COLOR_8888 |GU_VERTEX_16BIT | GU_TRANSFORM_2D);
 	local_list++;
 	//pass adress to vertex data part 1
 	(*local_list) = (unsigned int) (16 << 24) | ((((unsigned int) vertices)
@@ -1122,7 +1182,7 @@ unsigned int* clearScreen(unsigned int* geList, int listId) {
 	local_list++;
 
 	//pass to GE
-	sceGeListUpdateStallAddr_Func(listId, local_list);
+	//sceGeListUpdateStallAddr_Func(listId, local_list);
 
 	//reset the clear flag
 	(*local_list) = (unsigned int) (0xD3 << 24) | (0x0);
@@ -1137,11 +1197,13 @@ unsigned int* clearScreen(unsigned int* geList, int listId) {
 unsigned int* prepareRender3D(unsigned int listId, unsigned int* list, short buffer, unsigned int pixelMask, short withClear, short rot){
 
 #ifdef DEBUG_MODE
-	debuglog("prepare 3D - clear/set pixel mask\r\n");
+	char txt[100];
+	sprintf(txt,"prepare 3D - clear/set pixel mask list:%X\r\n", (unsigned int)list);
+	debuglog(txt);
 #endif
+	unsigned int clearFlags;
 	if (withClear){
 #ifdef DEBUG_MODE
-		char txt[100];
 		sprintf(txt, "clear screen on buffer %d:%X\r\n", buffer, frameBuff[buffer]);
 		debuglog(txt);
 #endif
@@ -1149,7 +1211,11 @@ unsigned int* prepareRender3D(unsigned int listId, unsigned int* list, short buf
 		list++;
 		(*list) = (frameBuffW[buffer]);
 		list++;
-		list = clearScreen(list, listId);
+		if (withClear == 2)
+			clearFlags = (GU_DEPTH_BUFFER_BIT | GU_STENCIL_BUFFER_BIT);
+		else
+			clearFlags = (GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT | GU_STENCIL_BUFFER_BIT);
+		list = clearScreen(list, listId, clearFlags);
 	}
 	//set pixel mask - do not write the color provided (red/cyan)
 	(*list) = (unsigned int) (0xE8 << 24) | (pixelMask);
@@ -1245,7 +1311,7 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 	//each time the enqueue was called we reset the next start address for all up coming
 	//updateStall calls
 	nextStart_list = 0;
-	manipulate = 0; //reset the manipulation
+	//manipulate = 0; //reset the manipulation
 	MYlocal_list = (unsigned int*) (((unsigned int) list) | 0x40000000);
 
 	if (draw3D == 1){
@@ -1282,18 +1348,22 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 		//first
 		//in case Enqueue is called more than once while one draw pass is executed
 		//we check for the flag drawSync which is set once the last draw has finished
-		local_list_s = (unsigned int*) (((unsigned int) geList3D[0]) | 0x40000000);
-		listId = sceGeListEnQueue_Func(local_list_s, local_list_s, 0,0);
-		//prepare 3d-render: clear screen and set pixel mask - do not write red
-		local_list_s = prepareRender3D(listId, local_list_s, state-1, currentConfig.color1, currentConfig.clearScreen, 0);
-		sceGeListUpdateStallAddr_Func(listId, local_list_s);
-		//sceGeListSync_Func(listId, 0);
+		if (drawSync == 1){
+			drawSync = 0;
+
+			local_list_s = (unsigned int*) (((unsigned int) geList3D[0]) | 0x40000000);
+			listId = sceGeListEnQueue_Func(local_list_s, local_list_s, cbid,0);
+			//prepare 3d-render: clear screen and set pixel mask - do not write red
+			local_list_s = prepareRender3D(listId, local_list_s, state-1, currentConfig.color1, currentConfig.clearScreen, 0);
+			sceGeListUpdateStallAddr_Func(listId, local_list_s);
+			sceGeListSync_Func(listId, 0);
+		}
 
 		if (stall == 0){
 			listPassedComplete = 1;
 			//now manipulate the GE list to change the view-Matrix
 			numerek++;
-			if (currentConfig.needStage1 == 1){
+			if (currentConfig.needStage1 == 1 && numerek < 3){
 				//make sure there is nothing located in the cache
 				sceKernelDcacheWritebackInvalidateAll();
 				Render3dStage1((unsigned int*)MYlocal_list);
@@ -1305,32 +1375,33 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 			//try to render the second frame at the same time to overlay the
 			//current draw
 			//pass current list to hardware and wait until it was processed
-
+			if (numerek < 3){
 			listId = sceGeListEnQueue_Func(MYlocal_list, 0, cbid, arg);
-			//sceGeListSync_Func(listId, 0);
+			sceGeListSync_Func(listId, 0);
 
 			local_list_s = (unsigned int*) (((unsigned int) geList3D[1]) | 0x40000000);
 			listId = sceGeListEnQueue_Func(local_list_s, local_list_s, cbid, arg);
 
-			local_list_s = prepareRender3D(listId, local_list_s, state-1, currentConfig.color2, 0, 1);
+			local_list_s = prepareRender3D(listId, local_list_s, state-1, currentConfig.color2, 2, 0);
 			sceGeListUpdateStallAddr_Func(listId, local_list_s);
-			//sceGeListSync_Func(listId, 0);
+			sceGeListSync_Func(listId, 0);
 			// do the second run
 			//make sure there is nothing located in the cache
 			sceKernelDcacheWritebackInvalidateAll();
 			frameBuffCount = 0;
 			viewMatrixCount = 0;
 			clearCount = 0;
+			pixelMaskCount = 0;
 			Render3dStage2(MYlocal_list);
 #ifdef DEBUG_MODE
-		sprintf(text, "viewCount: %d, frameBuffCount: %d, clearCount: %d\r\n", viewMatrixCount, frameBuffCount, clearCount);
+		sprintf(text, "viewCount: %d, frameBuffCount: %d, clearCount: %d, pmCount: %d\r\n", viewMatrixCount, frameBuffCount, clearCount, pixelMaskCount);
 		debuglog(text);
 #endif
 
 			//make sure there is nothing located in the cache
 			sceKernelDcacheWritebackInvalidateAll();
 			//sceKernelIcacheInvalidateAll();
-
+			}
 		}else if (list != stall){
 			//while update stall is called we do the 3D-Stage1
 			if (currentConfig.needStage1 == 1){
@@ -1396,10 +1467,10 @@ int sceGeListSync3D(int qid, int syncType) {
 		debuglog(txt);
 	}
 #endif
+	drawSync = 1;
 	//after each sync check for certain bits of the geList
-//	if (draw3D > 0)
-//		traceGeList(MYlocal_list);
-
+	//if (draw3D == 3)
+		//traceGeList(MYlocal_list);
 	//we do wait until the list is synchronized
 	//reset the next start...
 	nextStart_list = 0;
@@ -1413,9 +1484,9 @@ int sceGeDrawSync3D(int syncType) {
 	//reset the next Start address
 	int k1 = pspSdkSetK1(0);
 	unsigned int* local_list;
-
+	drawSync = 1;
 	//after each sync check for certain bits of the geList
-	//if (draw3D > 0)
+	//if (draw3D == 0)
 		//traceGeList(MYlocal_list);
 
 #ifdef DEBUG_MODE
@@ -1438,7 +1509,7 @@ int sceGeDrawSync3D(int syncType) {
 		unsigned int * local_list_s = (unsigned int*) (((unsigned int) geList3D[1])| 0x40000000);
 		int listId = sceGeListEnQueue_Func(local_list_s, local_list_s, 0, 0);
 		//set pixel mask and clear screen if necessary - do not draw cyan
-		local_list_s = prepareRender3D(listId, local_list_s, state - 1, currentConfig.color2, 0, 1);
+		local_list_s = prepareRender3D(listId, local_list_s, state - 1, currentConfig.color2, 2, 1);
 		sceGeListUpdateStallAddr_Func(listId, local_list_s);
 
 		manipulate = 0;
@@ -1464,6 +1535,8 @@ int sceGeDrawSync3D(int syncType) {
 		//listPassedComplete = 1;
 
 	}
+	manipulate = 0;
+	numerek = 0;
 	pspSdkSetK1(k1);
 	int ret = sceGeDrawSync_Func(syncType);
 	MYlocal_list = 0; // reset the current GE list as it get invalid but
@@ -1522,6 +1595,7 @@ int sceDisplaySetFrameBuf3D( void * frameBuffer, int buffWidth, int pixelFormat,
 	if (draw3D == 3){
 
 		//sceKernelDelayThread(1000);
+		pixelSize = pixelFormat;
 		temp = ((unsigned int)0x9c << 24) | ((unsigned int)frameBuffer & 0xffffff);
 		if (frameBuff[0] == temp)
 			state = 2;
@@ -1600,18 +1674,31 @@ int sceGeRestoreContext3D(void *context){
 void hookFunctions(void) {
 
 #ifdef DEBUG_MODE
-	debuglog("get user memory\n");
+	debuglog("get user memory\r\n");
 #endif
 	memid = sceKernelAllocPartitionMemory(2, "myGElist1", 0,
 			sizeof(unsigned int) * BUFF_SIZE, NULL);
+	if (memid < 0){
+#ifdef ERROR_LOG
+		debuglog("unable to get memory for custom display list1\r\n");
+#endif
+		draw3D = 0;
+		return;
+	}
 	memid2 = sceKernelAllocPartitionMemory(2, "myGElist2", 0,
 				sizeof(unsigned int) * BUFF_SIZE, NULL);
-
+	if (memid2 < 0){
+#ifdef ERROR_LOG
+		debuglog("unable to get memory for custom display list2\r\n");
+#endif
+		draw3D = 0;
+		return;
+	}
 	geList3D[0] = sceKernelGetBlockHeadAddr(memid);
 	geList3D[1] = sceKernelGetBlockHeadAddr(memid2);
 
 #ifdef DEBUG_MODE
-	debuglog("Start hooking display\n");
+	debuglog("Start hooking display\r\n");
 #endif
 
 	SceModule *module = sceKernelFindModuleByName( "sceDisplay_Service" );

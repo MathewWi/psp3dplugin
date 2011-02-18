@@ -32,6 +32,7 @@ typedef struct {
 	unsigned int addViewMtx;
 	unsigned int keepPixelmaskOrigin;
 	unsigned int lateHook;
+	unsigned int rotAllTime;
 	float rotationDistance;
 	float rotationAngle;
 	//char rotationAxis;

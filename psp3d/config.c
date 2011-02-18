@@ -136,12 +136,13 @@ int readConfigFile(const char* gameTitle){
 	currentConfig.addViewMtx = 0;
 	currentConfig.keepPixelmaskOrigin = 0;
 	currentConfig.lateHook = 0;
-	currentConfig.activationBtn = 0x800000; //PSP_CTRL_NOTE
-	currentConfig.color1 = 0x00ff00;//0x0000ff;
-	currentConfig.color2 = 0xff00ff;//0xffff00;
+	currentConfig.rotAllTime = 0;
+	currentConfig.activationBtn = 0x400000;//0x800000; //PSP_CTRL_NOTE
+	currentConfig.color1 = 0x0000ff;
+	currentConfig.color2 = 0xffff00;
 
-	fd = sceIoOpen("ms0:/seplugins/psp3d.cfg",PSP_O_RDONLY, 0777);
-	//fd = -1;
+	//fd = sceIoOpen("ms0:/seplugins/psp3d.cfg",PSP_O_RDONLY, 0777);
+	fd = -1;
 	int i;
 	if (fd >= 0){
 
@@ -212,6 +213,10 @@ int readConfigFile(const char* gameTitle){
 							//sscanf(&cfgLine[10], "%d", &currentConfig.clearScreen);
 							currentConfig.lateHook = charToUi(&cfgLine[9]);
 
+						if (strncmp(cfgLine, "ROT_ALL=", 8)==0)
+							//sscanf(&cfgLine[10], "%d", &currentConfig.clearScreen);
+							currentConfig.rotAllTime = charToUi(&cfgLine[8]);
+
 						if (strncmp(cfgLine, "ROT_IDENTITY=", 13)==0)
 							//sscanf(&cfgLine[13], "%d", &currentConfig.rotateIdentity);
 							currentConfig.rotateIdentity = charToUi(&cfgLine[13]);
@@ -274,12 +279,12 @@ int readConfigFile(const char* gameTitle){
 #endif
 	}
 
-#ifdef DEBUG_MODE
+/*#ifdef DEBUG_MODE
 //		char txt[150];
 		sprintf(txt, "Rot-Distance:%.3f, Angle(rad):%.3f, Clear:%d, Identity:%d, Activation: %X\r\n", currentConfig.rotationDistance, currentConfig.rotationAngle, currentConfig.clearScreen, currentConfig.rotateIdentity, currentConfig.activationBtn);
 		debuglog(txt);
 #endif
-
+*/
 	return 1;
 }
 

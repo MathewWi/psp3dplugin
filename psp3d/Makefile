@@ -6,7 +6,7 @@ USE_KERNEL_LIBSC = 1
 
 LIBS    = -lpspsystemctrl_kernel -lpspctrl_driver -lpspumd -lpspgum -lm
 #CFLAGS  = -O2 -G0 -Wall
-CFLAGS  = -O2 -G0 -Wall -fno-builtin-printf -DRELEASE #-ffast-math
+CFLAGS  = -O2 -G0 -Wall -fno-builtin-printf -DRELEASE -ffast-math
 #CFLAGS  = -O2 -G0 -Wall -fno-builtin-printf
 ASFLAGS = $(CFLAGS)
 
