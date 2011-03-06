@@ -22,9 +22,9 @@
 #ifndef CONFIG_H_
 #define CONFIG_H_
 
+#define MAX_COL_MODE 3
+
 typedef struct {
-	unsigned int color1;
-	unsigned int color2;
 	unsigned int clearScreen;
 	unsigned int rotateIdentity;
 	unsigned int needStage1;
@@ -35,9 +35,18 @@ typedef struct {
 	unsigned int rotAllTime;
 	float rotationDistance;
 	float rotationAngle;
+	char showStat;
+	unsigned char colorMode;
+	unsigned char colFlip;
 	//char rotationAxis;
 }configData;
 
+typedef struct colorMode{
+	unsigned int color1;
+	unsigned int color2;
+}colorMode;
+
+extern colorMode colorModes[MAX_COL_MODE*2];
 extern int readConfigFile(const char* gameTitle);
 
 #endif /* CONFIG_H_ */

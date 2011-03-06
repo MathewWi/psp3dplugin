@@ -86,7 +86,7 @@ void HookFuncSetting( void *addr, void *entry )
 	sceKernelDcacheWritebackInvalidateRange( addr, sizeof( addr ) );
 	sceKernelIcacheInvalidateRange( addr, sizeof( addr ) );
 }
-
+/*
 void sctrlHENPatchSyscall(u32 addr, void *newaddr)
 {
 
@@ -115,7 +115,7 @@ void sctrlHENPatchSyscall(u32 addr, void *newaddr)
 		}
 	}
 }
-
+*/
 int hookJump(const char * module, const char * library, unsigned int nid, void * function, unsigned int * orig_loader)
 {
   // Hooking Result

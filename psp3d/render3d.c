@@ -18,16 +18,16 @@
  * if not, see <http://www.gnu.org/licenses/>.
  *
  */
-
+#include <pspsdk.h>
 #include <pspkernel.h>
-#include "debug.h"
-#include "hook.h"
+#include <systemctrl.h>
 #include <pspgu.h>
 #include <pspgum.h>
 #include <psptypes.h>
 #include <stdio.h>
+#include "debug.h"
 #include "config.h"
-//#include <pspge.h>
+#include "hook.h"
 //#define TRACE_VIEW_MODE
 #define ERROR_LOG
 /*
@@ -64,7 +64,7 @@ int (*sceGeDrawSync_Func)(int) = NULL;
 int (*sceDisplaySetFrameBuf_Func)( void *, int, int, int ) = NULL;
 /* set GE callback function */
 int (*sceGeSetCallback_Func)(void *) = NULL;
-
+void (*GeCallback_Func)(int, void *) = NULL;
 int (*sceGeGetMtx_Func)(int , void *) = NULL;
 int (*sceGeSaveContext_Func)(void *) = NULL;
 int (*sceGeRestoreContext_Func)(void *) = NULL;
@@ -124,9 +124,11 @@ unsigned int getFrameBuffCount = 0;
 short frameBuffCount = 0;
 short viewMatrixCount = 0;
 short clearCount = 0;
+short stopCount;
 short pixelSize = 0;
 short pixelMaskCount = 0;
 unsigned char drawSync = 0;
+PspGeListArgs *enqueueArg = 0;
 /*
  * do the tracing stuff on a display list. All possible commands are listed
  * here and written to the logfile
@@ -470,7 +472,7 @@ static void Rotate3D(ScePspFMatrix4* view, float angle){
 	//but why does this cause any issue there...
 	//the screen is streched on the up-directison on the screen and a bit moved
 	//to the right...looks pretty strange...
-/*	if (currentConfig.rotateIdentity == 0){
+	if (currentConfig.rotateIdentity == 0){
 #ifdef DEBUG_MODE
 			debuglog("don't rotate identity\r\n");
 #endif
@@ -481,7 +483,6 @@ static void Rotate3D(ScePspFMatrix4* view, float angle){
 			return;
 		}
 	}
-	*/
 	/*
 	 * 49CF6378:ViewMatrix Item 0.0000x
 49CF637C:ViewMatrix Item 0.0000y
@@ -735,7 +736,10 @@ void Render3dStage1(unsigned int* currentList){
 							(*list) = 0x0;//(unsigned int) (0xE8 << 24) | 0x0; //NOP
 						}
 						break;
-
+					case 0x3c:
+						//view matrix strobe
+						viewMatrixCount++;
+						break;
 					case 0xd3:
 						//clear flags
 						//clear seem to be done in the following way:
@@ -758,6 +762,7 @@ void Render3dStage1(unsigned int* currentList){
 
 			} else {
 				parse = 0;
+				stopCount++;
 			}
 			list++;
 		}//!handleDefaultCmd...
@@ -775,7 +780,7 @@ void Render3dStage1(unsigned int* currentList){
  * do the second stage of the 3D rendering. This is intended to keep the pixelmask settings
  * as well to grab the view matrix and manipulate the same to get the requested effect
  */
-void Render3dStage2(unsigned int* currentList){
+void* Render3dStage2(unsigned int* currentList){
 	char parse = 1;
 	unsigned int *list;
 	int command = 0;
@@ -1043,17 +1048,26 @@ void Render3dStage2(unsigned int* currentList){
 						//4. reset clear flag
 						//as we would like to prevent the list from clearing
 						//we set some of the steps to be NOP ...
-						//if (manipulate == 1){
+						if (manipulate == 1){
 							(*list) &= ((unsigned int) (0xD3 << 24) | (((GU_DEPTH_BUFFER_BIT | GU_STENCIL_BUFFER_BIT) << 8) | 0x01)); //clear flag -> prevent color clear!
-						//} //if manipulate == 1
+						} //if manipulate == 1
 						clearCount++;
 
 						break;
 				}
 			} else {
 				parse = 0;
+				stopCount--;
 			}
 			list++;
+			if (parse == 0){
+#ifdef DEBUG_MODE
+				sprintf(txt, "List after End:%X - stopCount:%d\r\n", (unsigned int)(*list), stopCount);
+				debuglog(txt);
+#endif
+				if (stopCount > 0)
+					parse = 1;
+			}
 		}//!handleDefaultGeCmd()
 		//!handleDefaultCmd...
 		//in case there is a call in the display list it may target
@@ -1064,6 +1078,8 @@ void Render3dStage2(unsigned int* currentList){
 			parse = 0;
 		}
 	}
+
+	return list;
 }
 
 int sceGeListUpdateStallAddr3D(int qid, void *stall) {
@@ -1223,12 +1239,77 @@ unsigned int* prepareRender3D(unsigned int listId, unsigned int* list, short buf
 	(*list) = (unsigned int) (0xE9 << 24) | (0x000000);
 	list++;
 
-	if (currentConfig.addViewMtx == 1 && rot == 1){
+	if (currentConfig.addViewMtx == 1){
 #ifdef DEBUG_MODE
 		debuglog("add viewMatrix to list\r\n");
 #endif
 		gumLoadIdentity(&view);
-		Rotate3D(&view, currentConfig.rotationAngle);
+#ifdef DEBUG_LOG
+		unsigned int geMtx[12];
+		sceGeGetMtx(9,geMtx);
+		u32 t1;
+		float t2;
+		t1 = geMtx[0] << 8;
+		memcpy(&t2, &t1, 4);
+		debuglog("GE ViewMtx:");
+		t1 = geMtx[0] << 8;
+		memcpy(&t2, &t1, 4);
+		sprintf(txt, "%f,", t2);
+		debuglog(txt);
+		t1 = geMtx[1] << 8;
+		memcpy(&t2, &t1, 4);
+		sprintf(txt, "%f,", t2);
+		debuglog(txt);
+		t1 = geMtx[2] << 8;
+		memcpy(&t2, &t1, 4);
+		sprintf(txt, "%f\r\n", t2);
+		debuglog(txt);
+
+		t1 = geMtx[3] << 8;
+		memcpy(&t2, &t1, 4);
+		sprintf(txt, "%f,", t2);
+		debuglog(txt);
+		t1 = geMtx[4] << 8;
+		memcpy(&t2, &t1, 4);
+		sprintf(txt, "%f,", t2);
+		debuglog(txt);
+		t1 = geMtx[5] << 8;
+		memcpy(&t2, &t1, 4);
+		sprintf(txt, "%f\r\n", t2);
+		debuglog(txt);
+
+		t1 = geMtx[6] << 8;
+		memcpy(&t2, &t1, 4);
+		sprintf(txt, "%f,", t2);
+		debuglog(txt);
+		t1 = geMtx[7] << 8;
+		memcpy(&t2, &t1, 4);
+		sprintf(txt, "%f,", t2);
+		debuglog(txt);
+		t1 = geMtx[8] << 8;
+		memcpy(&t2, &t1, 4);
+		sprintf(txt, "%f\r\n", t2);
+		debuglog(txt);
+
+		t1 = geMtx[9] << 8;
+		memcpy(&t2, &t1, 4);
+		sprintf(txt, "%f,", t2);
+		debuglog(txt);
+		t1 = geMtx[10] << 8;
+		memcpy(&t2, &t1, 4);
+		sprintf(txt, "%f,", t2);
+		debuglog(txt);
+		t1 = geMtx[11] << 8;
+		memcpy(&t2, &t1, 4);
+		sprintf(txt, "%f\r\n", t2);
+		debuglog(txt);
+#endif
+		if (rot == 1){
+#ifdef DEBUG_MODE
+		debuglog("rotate matrix\r\n");
+#endif
+			Rotate3D(&view, currentConfig.rotationAngle);
+		}
 		(*list) = (unsigned int) 0x3c << 24;
 		(*list) = (unsigned int) (0x3d << 24)
 										| (((*((u32*) &view.x.x)) >> 8) & 0xffffff);
@@ -1325,6 +1406,7 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 		afterSync = 0;
 		draw3D = 2;
 		getFrameBuffCount = 0;
+		stopCount = 0;
 #ifdef DEBUG_MODE
 			debuglog("GeListEnqueue - draw3D 1\r\n");
 #endif
@@ -1348,22 +1430,26 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 		//first
 		//in case Enqueue is called more than once while one draw pass is executed
 		//we check for the flag drawSync which is set once the last draw has finished
-		if (drawSync == 1){
+/*		if (drawSync == 1){
 			drawSync = 0;
-
+*/
 			local_list_s = (unsigned int*) (((unsigned int) geList3D[0]) | 0x40000000);
+			pspSdkSetK1(k1);
 			listId = sceGeListEnQueue_Func(local_list_s, local_list_s, cbid,0);
+			k1 = pspSdkSetK1(0);
 			//prepare 3d-render: clear screen and set pixel mask - do not write red
-			local_list_s = prepareRender3D(listId, local_list_s, state-1, currentConfig.color1, currentConfig.clearScreen, 0);
+			local_list_s = prepareRender3D(listId, local_list_s, state-1, colorModes[currentConfig.colorMode].color1, currentConfig.clearScreen, 0);
+			pspSdkSetK1(k1);
 			sceGeListUpdateStallAddr_Func(listId, local_list_s);
 			sceGeListSync_Func(listId, 0);
-		}
+			k1 = pspSdkSetK1(0);
+//		}
 
 		if (stall == 0){
 			listPassedComplete = 1;
 			//now manipulate the GE list to change the view-Matrix
 			numerek++;
-			if (currentConfig.needStage1 == 1 && numerek < 3){
+			if (currentConfig.needStage1 == 1){// && numerek < 3){
 				//make sure there is nothing located in the cache
 				sceKernelDcacheWritebackInvalidateAll();
 				Render3dStage1((unsigned int*)MYlocal_list);
@@ -1375,16 +1461,21 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 			//try to render the second frame at the same time to overlay the
 			//current draw
 			//pass current list to hardware and wait until it was processed
-			if (numerek < 3){
+	//		if (numerek < 3){
+			pspSdkSetK1(k1);
 			listId = sceGeListEnQueue_Func(MYlocal_list, 0, cbid, arg);
 			sceGeListSync_Func(listId, 0);
+			k1 = pspSdkSetK1(0);
 
 			local_list_s = (unsigned int*) (((unsigned int) geList3D[1]) | 0x40000000);
+			pspSdkSetK1(k1);
 			listId = sceGeListEnQueue_Func(local_list_s, local_list_s, cbid, arg);
-
-			local_list_s = prepareRender3D(listId, local_list_s, state-1, currentConfig.color2, 2, 0);
+			k1 = pspSdkSetK1(0);
+			local_list_s = prepareRender3D(listId, local_list_s, state-1, colorModes[currentConfig.colorMode].color2, 2, 1);
+			pspSdkSetK1(k1);
 			sceGeListUpdateStallAddr_Func(listId, local_list_s);
 			sceGeListSync_Func(listId, 0);
+			k1 = pspSdkSetK1(0);
 			// do the second run
 			//make sure there is nothing located in the cache
 			sceKernelDcacheWritebackInvalidateAll();
@@ -1401,7 +1492,7 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 			//make sure there is nothing located in the cache
 			sceKernelDcacheWritebackInvalidateAll();
 			//sceKernelIcacheInvalidateAll();
-			}
+//			}
 		}else if (list != stall){
 			//while update stall is called we do the 3D-Stage1
 			if (currentConfig.needStage1 == 1){
@@ -1419,13 +1510,17 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 		debuglog("GeListEnqueue - draw3D 9\r\n");
 #endif
 		local_list_s = (unsigned int*) (((unsigned int) geList3D[0])| 0x40000000);
+		pspSdkSetK1(k1);
 		listId = sceGeListEnQueue_Func(local_list_s, local_list_s, 0, 0);
+		k1 = pspSdkSetK1(0);
 
 		local_list_s = prepareRender3D(listId, local_list_s, 1, 0x000000, 0, 0);
+		pspSdkSetK1(k1);
 		sceGeListUpdateStallAddr_Func(listId, local_list_s);
 		sceGeListSync_Func(listId, 0);
-
+		k1 = pspSdkSetK1(0);
 		draw3D = 0;
+		stopCount = 0;
 	}
 
 	//set addres to some other int variable
@@ -1506,11 +1601,16 @@ int sceGeDrawSync3D(int syncType) {
 		sprintf(text, "pass last list after stall 2nd time %X\r\n", (unsigned int)MYlocal_list);
 		debuglog(text);
 #endif
+		int interupts = pspSdkDisableInterrupts();
 		unsigned int * local_list_s = (unsigned int*) (((unsigned int) geList3D[1])| 0x40000000);
+		pspSdkSetK1(k1);
 		int listId = sceGeListEnQueue_Func(local_list_s, local_list_s, 0, 0);
+		k1 = pspSdkSetK1(0);;
 		//set pixel mask and clear screen if necessary - do not draw cyan
-		local_list_s = prepareRender3D(listId, local_list_s, state - 1, currentConfig.color2, 2, 1);
+		local_list_s = prepareRender3D(listId, local_list_s, state - 1, colorModes[currentConfig.colorMode].color2, 2, 1);
+		pspSdkSetK1(k1);
 		sceGeListUpdateStallAddr_Func(listId, local_list_s);
+		k1 = pspSdkSetK1(0);
 
 		manipulate = 0;
 		local_list = (unsigned int*)MYlocal_list;
@@ -1520,20 +1620,24 @@ int sceGeDrawSync3D(int syncType) {
 		frameBuffCount = 0;
 		viewMatrixCount = 0;
 		clearCount = 0;
-		Render3dStage2((unsigned int*)local_list);
+		void* stall = Render3dStage2((unsigned int*)local_list);
 #ifdef DEBUG_MODE
 		sprintf(text, "viewCount: %d, frameBuffCount: %d, clearCount: %d\r\n", viewMatrixCount, frameBuffCount, clearCount);
+		debuglog(text);
+		sprintf(text, "List 2:%X - stall: %X\r\n", local_list, stall);
 		debuglog(text);
 #endif
 
 		//make sure there is nothing sitting in the cache
 		sceKernelDcacheWritebackInvalidateAll();
 		//sceKernelIcacheInvalidateAll();
+		pspSdkSetK1(k1);
 		listId = sceGeListEnQueue_Func(local_list, 0, 0, 0);
+		k1 = pspSdkSetK1(0);
 		//sceGeListSync_Func(listId, 0);
 
-		//listPassedComplete = 1;
-
+		listPassedComplete = 1;
+		pspSdkEnableInterrupts(interupts);
 	}
 	manipulate = 0;
 	numerek = 0;
@@ -1548,14 +1652,14 @@ int sceGeDrawSync3D(int syncType) {
  * setting the display'd framebuffer to a new address
  */
 int sceDisplaySetFrameBuf3D( void * frameBuffer, int buffWidth, int pixelFormat, int syncMode){
+	int k1 = pspSdkSetK1(0);
 	unsigned int temp;
-#ifdef DEBUG_MODE
 	char txt[150];
+#ifdef DEBUG_MODE
 
 	if (draw3D > 0){
 		sprintf(txt, "setDisplayBuff - %X, %u, %u, %u\r\n", frameBuffer, buffWidth, pixelFormat, syncMode);
 		debuglog(txt);
-		//sceKernelDelayThread(100);
 	}
 #endif
 
@@ -1601,12 +1705,25 @@ int sceDisplaySetFrameBuf3D( void * frameBuffer, int buffWidth, int pixelFormat,
 			state = 2;
 		else
 			state = 1;
+
+
+		if (currentConfig.showStat == 1){
+			sprintf(txt, "A:%.4f;P:%.4f", currentConfig.rotationAngle*180.0f/GU_PI, currentConfig.rotationDistance);
+			//pspDebugScreenSetXY(1,1);
+			//pspDebugScreenKprintf(txt);
+		}
 	}
+	pspSdkSetK1(k1);
 	int ret = sceDisplaySetFrameBuf_Func(frameBuffer, buffWidth, pixelFormat, syncMode);
+	if (draw3D == 3){
+		if (currentConfig.showStat == 1){
+				sprintf(txt, "A:%.4f;P:%.4f", currentConfig.rotationAngle*180.0f/GU_PI, currentConfig.rotationDistance);
+				//pspDebugScreenSetXY(1,1);
+				//pspDebugScreenKprintf(txt);
+			}
+	}
 	return ret;
 }
-
- void (*GeCallback_Func)(int, void *) = NULL;
 
 void GeCallback3D(int id, void* arg){
 #ifdef DEBUG_MODE
@@ -1668,11 +1785,13 @@ int sceGeRestoreContext3D(void *context){
 	return ret;
 
 }
+
+//unsigned int origLoader[11];
 /*------------------------------------------------------------------------------*/
 /* hookDisplay																	*/
 /*------------------------------------------------------------------------------*/
 void hookFunctions(void) {
-
+	char txt[100];
 #ifdef DEBUG_MODE
 	debuglog("get user memory\r\n");
 #endif
@@ -1699,8 +1818,88 @@ void hookFunctions(void) {
 
 #ifdef DEBUG_MODE
 	debuglog("Start hooking display\r\n");
+	sprintf(txt, "HEN Version : %X\r\n", sctrlHENGetVersion());
+	debuglog(txt);
 #endif
 
+	u32 originalAddr;
+/*
+	//TEST
+	hookAPI("sceDisplay_Service", "sceDisplay", 0x289D82FE, sceDisplaySetFrameBuf3D, HOOK_SYSCALL, origLoader);
+	sceDisplaySetFrameBuf_Func = (int(*)(void))origLoader;
+	debuglog("after setFrameBuff hook\r\n");
+*/
+
+	originalAddr = sctrlHENFindFunction("sceDisplay_Service", "sceDisplay", 0x289D82FE);
+	if (originalAddr != NULL){
+		sctrlHENPatchSyscall(originalAddr, sceDisplaySetFrameBuf3D);
+		sceKernelDcacheWritebackInvalidateAll();
+		sceKernelIcacheInvalidateAll();
+		sceDisplaySetFrameBuf_Func = (void*)originalAddr;
+//	sprintf(txt, "DisplayBuff addr: %X\r\n", originalAddr);
+//	debuglog(txt);
+	}else {
+#ifdef ERROR_LOG
+		debuglog("unable to hook sceDisplaySetFrameBuf\r\n");
+#endif
+	}
+
+	originalAddr = sctrlHENFindFunction("sceGE_Manager", "sceGe_user", 0xE0D68148);
+	if (originalAddr != NULL){
+		sctrlHENPatchSyscall(originalAddr, sceGeListUpdateStallAddr3D);
+		sceKernelDcacheWritebackInvalidateAll();
+		sceKernelIcacheInvalidateAll();
+		sceGeListUpdateStallAddr_Func = (void*)originalAddr;
+	} else {
+#ifdef ERROR_LOG
+		debuglog("unable to hook sceGeDrawSync\r\n");
+#endif
+	}
+
+	originalAddr = sctrlHENFindFunction("sceGE_Manager", "sceGe_user", 0xAB49E76A);
+	if (originalAddr != NULL){
+		sctrlHENPatchSyscall(originalAddr, sceGeListEnQueue3D);
+		sceKernelDcacheWritebackInvalidateAll();
+		sceKernelIcacheInvalidateAll();
+		sceGeListEnQueue_Func = (void*)originalAddr;
+	} else {
+#ifdef ERROR_LOG
+		debuglog("unable to hook sceGeDrawSync\r\n");
+#endif
+	}
+
+	originalAddr = sctrlHENFindFunction("sceGE_Manager", "sceGe_user", 0x03444EB4);
+	if (originalAddr != NULL){
+		sctrlHENPatchSyscall(originalAddr, sceGeListSync3D);
+		sceKernelDcacheWritebackInvalidateAll();
+		sceKernelIcacheInvalidateAll();
+		sceGeListSync_Func = (void*)originalAddr;
+	} else {
+#ifdef ERROR_LOG
+		debuglog("unable to hook sceGeListSync\r\n");
+#endif
+	}
+
+	originalAddr = sctrlHENFindFunction("sceGE_Manager", "sceGe_user", 0xB287BD61);
+	if (originalAddr != NULL){
+		sctrlHENPatchSyscall(originalAddr, sceGeDrawSync3D);
+		sceKernelDcacheWritebackInvalidateAll();
+		sceKernelIcacheInvalidateAll();
+		sceGeDrawSync_Func = (void*)originalAddr;
+	} else {
+#ifdef ERROR_LOG
+		debuglog("unable to hook sceGeDrawSync\r\n");
+#endif
+	}
+
+/*	debuglog("hook gesavecontext\r\n");
+	sceGeSaveContext_Func = sctrlHENFindFunction("sceGE_Manager", "sceGe_user", 0x438A385A);
+	sctrlHENPatchSyscall(sceGeSaveContext_Func, sceGeSaveContext3D);
+	sceKernelDcacheWritebackInvalidateAll();
+	sceKernelIcacheInvalidateAll();
+	debuglog("hook done\r\n");
+	*/
+/*
 	SceModule *module = sceKernelFindModuleByName( "sceDisplay_Service" );
 	if ( module == NULL ){
 #ifdef ERROR_LOG
@@ -1728,16 +1927,8 @@ void hookFunctions(void) {
 		}
 
 	}
-
-
-	SceModule *module2 = sceKernelFindModuleByName("sceGE_Manager");
-	if (module2 == NULL) {
-#ifdef ERROR_LOG
-		debuglog("unable to find sceGE_Manager module\r\n");
-#endif
-		return;
-	}
-
+*/
+/*
 	if (sceGeListEnQueue_Func == NULL) {
 		sceGeListEnQueue_Func = HookNidAddress(module2, "sceGe_user",
 				0xAB49E76A);
@@ -1911,12 +2102,27 @@ void hookFunctions(void) {
 			}
 		}
 
-
+*/
 
 
 #ifdef DEBUG_MODE
 	debuglog("End hooking display\r\n");
 #endif
+}
+
+void hookDisplayOnly(void) {
+	u32 originalAddr;
+	originalAddr = sctrlHENFindFunction("sceDisplay_Service", "sceDisplay", 0x289D82FE);
+	if (originalAddr != NULL){
+		sctrlHENPatchSyscall(originalAddr, sceDisplaySetFrameBuf3D);
+		sceKernelDcacheWritebackInvalidateAll();
+		sceKernelIcacheInvalidateAll();
+		sceDisplaySetFrameBuf_Func = (void*)originalAddr;
+	}else {
+#ifdef ERROR_LOG
+		debuglog("unable to hook sceDisplaySetFrameBuf\r\n");
+#endif
+	}
 }
 
 /*

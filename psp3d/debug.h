@@ -3,18 +3,14 @@
 
 //debug mode does activate the logging of the function entries
 //to get an idea which order the current game is calling them
-#define DEBUG_MODE
+//#define DEBUG_MODE
 //trace mode does activate logging all GE-List entries
 //this is to get an idea how the current game is using the same
 //#define TRACE_MODE
 
 
 #define LOGFILE "ms0:/psp3d.log"
-
+#define LOGFILEGO "ef0:/psp3d.log"
 // Debug Log
-int debuglog(const char * string);
-
-// Append Buffer to File
-int appendBufferToFile(const char * path, void * buffer, int buflen);
-
+int debuglog(const char * txt);//, ...);
 #endif 

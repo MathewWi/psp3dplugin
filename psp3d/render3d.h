@@ -23,6 +23,7 @@
 #define RENDER3D_H_
 
 extern void hookFunctions( void );
+extern void hookDisplayOnly( void );
 extern void unhookFunctions(void);
 //extern int can_parse;
 extern char draw3dState;

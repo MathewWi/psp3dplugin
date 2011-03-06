@@ -28,6 +28,13 @@
 #include "debug.h"
 
 configData currentConfig;
+colorMode colorModes[MAX_COL_MODE*2] = { {0x0000ff, 0xffff00},
+										 {0x00ff00, 0xff00ff},
+										 {0xff0000, 0x00ffff},
+
+										 {0xffff00, 0x0000ff},
+										 {0xff00ff, 0x00ff00},
+										 {0x00ffff, 0xff0000}};
 
 short isNumber(const char z){
 	if (z == '0') return 0;
@@ -127,7 +134,6 @@ int readConfigFile(const char* gameTitle){
 	short feof = 0;
 // set default values in case there are sections missing in the file or it could
 // not be read proberbly
-	//currentConfig.rotationAxis = 'Y';//'Y';
 	currentConfig.rotationDistance = 0.0f;//9.0f;
 	currentConfig.rotationAngle = 0.75f*GU_PI/180.0f;
 	currentConfig.clearScreen = 1;
@@ -136,13 +142,14 @@ int readConfigFile(const char* gameTitle){
 	currentConfig.addViewMtx = 0;
 	currentConfig.keepPixelmaskOrigin = 0;
 	currentConfig.lateHook = 0;
-	currentConfig.rotAllTime = 0;
-	currentConfig.activationBtn = 0x400000;//0x800000; //PSP_CTRL_NOTE
-	currentConfig.color1 = 0x0000ff;
-	currentConfig.color2 = 0xffff00;
+	currentConfig.rotAllTime = 1;
+	currentConfig.activationBtn = 0x800000; //PSP_CTRL_NOTE
+	currentConfig.colorMode = 0;
+	currentConfig.showStat = 0;
+	currentConfig.colFlip = 0;
 
-	//fd = sceIoOpen("ms0:/seplugins/psp3d.cfg",PSP_O_RDONLY, 0777);
-	fd = -1;
+	fd = sceIoOpen("ms0:/seplugins/psp3d.cfg",PSP_O_RDONLY, 0777);
+	//fd = -1;
 	int i;
 	if (fd >= 0){
 
@@ -225,16 +232,13 @@ int readConfigFile(const char* gameTitle){
 						if (strncmp(cfgLine, "COLOR_MODE=", 11) == 0){
 							switch (cfgLine[11]){
 							case 'R':
-								currentConfig.color1 = 0x0000ff;
-								currentConfig.color2 = 0xffff00;
+								currentConfig.colorMode = 0;
 								break;
 							case 'G':
-								currentConfig.color1 = 0xff00ff;
-								currentConfig.color2 = 0x00ff00;
+								currentConfig.colorMode = 1;
 								break;
 							case 'Y':
-								currentConfig.color1 = 0xff0000;
-								currentConfig.color2 = 0x00ffff;
+								currentConfig.colorMode = 2;
 								break;
 							}
 						}
