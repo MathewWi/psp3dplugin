@@ -4,20 +4,9 @@
 #include <pspkernel.h>
 #include <pspsdk.h>
 #include <pspctrl.h>
-//#include <pspctrl_kernel.h>
-//#include <psppower.h>
-//#include <pspdisplay.h>
 #include <pspdisplay_kernel.h>
-//#include <psputilsforkernel.h>
-//#include <pspsysmem_kernel.h>
-//#include <pspdebug.h>
 #include <pspgu.h>
-//#include <pspsdk.h>
-//#include <pspkernel.h>
 #include <systemctrl.h>
-//#include <string.h>
-//#include <stdio.h>
-//#include <malloc.h>
 #include "hook.h"
 #include "debug.h"
 #include "gameinfo.h"
@@ -191,13 +180,32 @@ static int MainThread( SceSize args, void *argp )
 int MainThread( SceSize args, void *argp ){
 	char hooked = 0;
 	char noteHandled = 0;
+	char firstRun = 1;
 	SceCtrlData paddata;
 	unsigned int lastButtons = 0;
 
 #ifdef DEBUG_MODE
 	debuglog("Plugin started\r\n");
 #endif
-	readConfigFile("space");
+	readConfigFile(gametitle);
+
+	while (sceKernelFindModuleByName("sceDisplay_Service") == NULL)
+	{
+		sceKernelDelayThread(20);
+	}
+
+#ifdef DEBUG_MODE
+	debuglog("Display module loaded\r\n");
+#endif
+
+	while (sceKernelFindModuleByName("sceGE_Manager") == NULL)
+	{
+		sceKernelDelayThread(20);
+	}
+
+#ifdef DEBUG_MODE
+	debuglog("GE Manager loaded\r\n");
+#endif
 
 	if (currentConfig.lateHook == 0){
 		hookFunctions();
@@ -210,8 +218,9 @@ int MainThread( SceSize args, void *argp ){
 	currentConfig.activationBtn = 0x800000; //note key//0x400000; // screen key
 #endif
 	while (running){
+		if (firstRun) debuglog("before ctrl read\r\n");
 		sceCtrlPeekBufferPositive(&paddata, 1);
-
+		if (firstRun) debuglog("after ctrl read\r\n");
 		if(paddata.Buttons != lastButtons)
 		{
 			//
@@ -259,7 +268,7 @@ int MainThread( SceSize args, void *argp ){
 					}
 				}
 			}
-			//press "note" button and magick begin
+			//press "note" button and magic begin
 			if(paddata.Buttons & currentConfig.activationBtn && noteHandled == 0)
 			{
 #ifdef DEBUG_MODE
@@ -270,6 +279,10 @@ int MainThread( SceSize args, void *argp ){
 #ifdef DEBUG_MODE
 					debuglog("initiate render3D\r\n");
 #endif
+					if (hooked == 0){
+						hookFunctions();
+						hooked = 1;
+					}
 					draw3D = 1;
 				}
 				else{
@@ -282,7 +295,10 @@ int MainThread( SceSize args, void *argp ){
 			}
 			lastButtons = paddata.Buttons;
 		}
-		sceKernelDelayThread(10000);
+		if (firstRun) debuglog("before delay\r\n");
+		sceKernelDelayThread(100000);
+		if (firstRun) debuglog("after delay\r\n");
+		firstRun = 0;
 	}
 	return 0;
 }
@@ -291,22 +307,22 @@ int MainThread( SceSize args, void *argp ){
 /*------------------------------------------------------------------------------*/
 int module_start( SceSize args, void *argp )
 {
-#ifdef DEBUG_MODE
-	debuglog("3d-plugin module_start\r\n");
-#endif
 	//get the current game info
 	int gi_result = getGameInfo();
 	if (gi_result < 0){
+		//this could also be the result in running a game as
+		//ISO from an ISO loader ... e.g. while in HEN mode
+		//if this is the case we may need to wait in the main thread
+		//until an ISO was choosen and loaded....
 		debuglog("Error getting game info\r\n");
 	}
-/*#ifdef DEBUG_MODE
+#ifdef DEBUG_MODE
 	char text[200];
 	sprintf(text, "Game ID:%s\r\n", gameid);
 	debuglog(text);
 	sprintf(text, "Game Title:%.100s\r\n", gametitle);
 	debuglog(text);
 #endif
-*/
 
 	MainThreadID = sceKernelCreateThread( "PSP3DPlugin", MainThread, 25, 0x10000, 0, NULL );
 	if ( MainThreadID >= 0 )
