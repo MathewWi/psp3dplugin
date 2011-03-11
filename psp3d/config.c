@@ -141,14 +141,17 @@ int readConfigFile(const char* gameTitle){
 	currentConfig.needStage1 = 1;
 	currentConfig.addViewMtx = 0;
 	currentConfig.keepPixelmaskOrigin = 0;
-	currentConfig.lateHook = 0;
-	currentConfig.rotAllTime = 1;
+	currentConfig.lateHook = 1;
+	currentConfig.rotAllTime = 0;
 	currentConfig.activationBtn = 0x800000; //PSP_CTRL_NOTE
 	currentConfig.colorMode = 0;
 	currentConfig.showStat = 0;
 	currentConfig.colFlip = 0;
 
 	fd = sceIoOpen("ms0:/seplugins/psp3d.cfg",PSP_O_RDONLY, 0777);
+	//for PSPGo Support check if ms0 failed for ef0...
+	if (fd < 0)
+		fd = sceIoOpen("ef0:/seplugins/psp3d.cfg",PSP_O_RDONLY, 0777);
 	//fd = -1;
 	int i;
 	if (fd >= 0){
