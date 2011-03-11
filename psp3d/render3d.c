@@ -25,6 +25,8 @@
 #include <pspgum.h>
 #include <psptypes.h>
 #include <stdio.h>
+#include <math.h>
+#include <pspvfpu.h>
 #include "debug.h"
 #include "config.h"
 #include "hook.h"
@@ -91,10 +93,10 @@ unsigned int frameBuffW[2] = { 0, 0 }; //draw buff height bits and buffer width
 int adress_number = 0;
 int can_parse = 0;
 
-char state = 0;
+char state = 1;
 char afterSync = 0;
 char viewMatrixState = 0;
-
+char countEnqueueWithOutDisplay = 0;
 struct Vertex {
 	u32 color;
 	u16 x, y, z;
@@ -354,11 +356,11 @@ char handleDefaultGeCmd(unsigned int** geList){
 
 	command = (**geList) >> 24;
 	argument = (**geList) & 0xffffff;
-/*#ifdef DEBUG_MODE
+//#ifdef DEBUG_MODE
 	char txt[100];
 	sprintf(txt,"handle default cmd: %X-%X\r\n", (unsigned int)(*geList),(unsigned int)(**geList) );
 	debuglog(txt);
-#endif*/
+//#endif
 	switch (command) {
 		case 0x08:
 			//jump to a new display list address
@@ -443,10 +445,15 @@ void getFrameBuffFromList(unsigned int* list, unsigned int* frameB, unsigned int
 			}
 			if ((*local_list) >> 24 == 12)
 				parse = 0;
-			if (stall != 0 && (unsigned int)local_list > (unsigned int)stall)
-				parse = 0;
 
 			local_list++;
+		}
+		//in case there is a call in the display list it may target
+		//beyond the stall adress as it goes to an other display list
+		//we should stop in this case only if there is no open call left
+		if (stall && local_list >= stall
+			&& adress_number < 1 ) {
+			parse = 0;
 		}
 	}
 	//count the tries we would like to get the framebuffer
@@ -458,7 +465,7 @@ void getFrameBuffFromList(unsigned int* list, unsigned int* frameB, unsigned int
  * will be a fix point in front of the camera represented by the view
  * matrix
  */
-static void Rotate3D(ScePspFMatrix4* view, float angle){
+void Rotate3D(ScePspFMatrix4* view, float angle){
 #ifdef TRACE_VIEW_MODE
 	char text[150];
 #endif
@@ -572,6 +579,109 @@ static void Rotate3D(ScePspFMatrix4* view, float angle){
 #endif
 }
 
+/*
+ * try using VFPU to do all the mathematic
+ */
+/*
+struct pspvfpu_context *vfpu_context = 0;
+
+void Rotate3D_VFPU(ScePspFMatrix4* view, const float angle){
+#ifdef TRACE_VIEW_MODE
+	char text[150];
+#endif
+	//set the VFPU context to be used - make sure we are free to use up to 4
+	//matrixes
+	ScePspFMatrix4 inverse;
+	ScePspFVector3 origin;
+	if ( vfpu_context == 0)
+		vfpu_context = pspvfpu_initcontext();
+
+	pspvfpu_use_matrices(vfpu_context, 0, VMAT0 | VMAT1 | VMAT2 | VMAT3);
+	__asm__ volatile(
+			//load the matrix into the VFPU registers M000
+			"ulv.q C000, 0+%0\n" //X
+			"ulv.q C010,16+%0\n" //Y
+			"ulv.q C020,32+%0\n" //Z
+			"ulv.q C030,48+%0\n" //W
+
+			//invert the matrix and store to M100
+			"vmidt.q M100\n" //identity mtx
+			"vmmov.t M100, E000\n"
+			"vneg.t  C200, C030\n"
+			"vtfm3.t C130, M000, C200\n"
+			//for gripshift we need to check for identity matrix --> @TODO
+
+			//get the view's origin, we can use M200 and M300:
+			//origin.y = (inverse.w.y - inverse.z.y*currentConfig.rotationDistance);
+			//origin.z = (inverse.w.z - inverse.z.z*currentConfig.rotationDistance);
+			//origin.x = (inverse.w.x - inverse.z.x*currentConfig.rotationDistance);
+			"mtv %3, S220\n"
+			"vscl.t C210, C020, S220\n"
+			"vsub.t C200, C030, C210\n" //C200 is now the origin
+			"sv.q C200, 0+%3\n"
+
+			//move the camera to the origin
+			"vmidt.q M300\n"	//identity mtx
+			"vmov.t  C330, C200\n"
+			"vmmul.q M200, M000, M300\n" //view at origin is now in M200
+			//how can we setup the rotation matrix as we need it ?
+			//300=110*110*(1-c)+c
+			//310=110*111*(1-c)+112*s
+			//320=110*113*(1-c)-111*s
+			//330=0.0f
+			//we need to do some matrix/vector multiplications to achieve this i guess....
+
+			//return inverse,view matrix,origin
+			"sv.q C200, 0+%0\n"
+			"sv.q C210,16+%0\n"
+			"sv.q C220,32+%0\n"
+			"sv.q C230,48+%0\n"
+
+			"sv.q C100, 0+%1\n"
+			"sv.q C110,16+%1\n"
+			"sv.q C120,32+%1\n"
+			"sv.q C130,48+%1\n"
+
+			:"+m"(*view), "=m"(inverse), "=m"(origin):"r"(currentConfig.rotationDistance) );
+
+	// TEST start: don't rotate a fixed world axis, but rotate around the view-matrix UP-vector (Y-Axis)
+	// as the viewmatrix might be already rotated on 1 or more axis
+	//setup the rotation matrix
+	float rSin, rCos,r1Cos;//, roll;
+	rSin = sinf(angle);
+	rCos = cosf(angle);
+	r1Cos = 1 - rCos;
+	ScePspFMatrix4 rotMatrix =
+			{{inverse.y.x*inverse.y.x*(r1Cos)+rCos            , inverse.y.x*inverse.y.y*(r1Cos)-inverse.y.z*rSin, inverse.y.x*inverse.y.z*(r1Cos)+inverse.y.y*rSin, 0.0f},
+			 {inverse.y.x*inverse.y.y*(r1Cos)+inverse.y.z*rSin, inverse.y.y*inverse.y.y*(r1Cos)+rCos            , inverse.y.y*inverse.y.z*(r1Cos)-inverse.y.x*rSin, 0.0f},
+			 {inverse.y.x*inverse.y.z*(r1Cos)-inverse.y.y*rSin, inverse.y.y*inverse.y.z*(r1Cos)+inverse.y.x*rSin, inverse.y.z*inverse.y.z*(r1Cos)+rCos            , 0.0f},
+			 {0.0f, 0.0f, 0.0f, 1.0f}
+			};
+	//ScePspFMatrix4 tempView;
+	gumMultMatrix(view, view, &rotMatrix);
+
+	//view = tempView;
+	//move back the view to the initial place of the origin point
+	origin.x = -origin.x;
+	origin.y = -origin.y;
+	origin.z = -origin.z;
+	gumTranslate(view, &origin);
+
+#ifdef TRACE_VIEW_MODE
+	ScePspFMatrix4 inverseD2;
+	gumFullInverse(&inverseD2, view);
+	sprintf(text, "final View-Pos: %.3f|%.3f|%.3f|%.3f\r\n", inverseD2.w.x, inverseD2.w.y, inverseD2.w.z, inverseD2.w.w);
+	debuglog(text);
+	sprintf(text, "View-X-Vector: %.3f|%.3f|%.3f|%.3f\r\n", inverseD2.x.x, inverseD2.x.y, inverseD2.x.z, inverseD2.x.w);
+	debuglog(text);
+	sprintf(text, "View-Y-Vector: %.3f|%.3f|%.3f|%.3f\r\n", inverseD2.y.x, inverseD2.y.y, inverseD2.y.z, inverseD2.y.w);
+	debuglog(text);
+	sprintf(text, "View-Z-Vector: %.3f|%.3f|%.3f|%.3f\r\n", inverseD2.z.x, inverseD2.z.y, inverseD2.z.z, inverseD2.z.w);
+	debuglog(text);
+
+#endif
+}
+*/
 /*
  * just call this if we would like to trace specials GE commands or the whole list
  */
@@ -751,7 +861,8 @@ void Render3dStage1(unsigned int* currentList){
 						//we set some of the steps to be NOP ...
 						if (manipulate == 1){
 #ifdef DEBUG_MODE
-							debuglog("clear flag\r\n");
+							sprintf(txt, "%u clear flag\r\n", state);
+							debuglog(txt);
 #endif
 							(*list) &= ((unsigned int) (0xD3 << 24) | (((GU_DEPTH_BUFFER_BIT | GU_STENCIL_BUFFER_BIT) << 8) | 0x01)); //clear flag -> prevent color clear!
 						} //if manipulate == 1
@@ -803,7 +914,7 @@ void* Render3dStage2(unsigned int* currentList){
 		list = nextStart_list;
 
 	if (list == 0)
-		return;
+		return 0;
 
 	adress_number = 0; //reset adress counter for call's/jumps in display list
 	base = 0;
@@ -1062,7 +1173,7 @@ void* Render3dStage2(unsigned int* currentList){
 			list++;
 			if (parse == 0){
 #ifdef DEBUG_MODE
-				sprintf(txt, "List after End:%X - stopCount:%d\r\n", (unsigned int)(*list), stopCount);
+				sprintf(txt, "%u List after End:%X - stopCount:%d\r\n", state, (unsigned int)(*list), stopCount);
 				debuglog(txt);
 #endif
 				if (stopCount > 0)
@@ -1092,10 +1203,11 @@ int sceGeListUpdateStallAddr3D(int qid, void *stall) {
 #ifdef DEBUG_MODE
 	char txt[150];
 
-	if (draw3D > 0) {
+/*	if (draw3D > 0) {
 		sprintf(txt, "Update Stall Called: %d, Stall: %X\r\n", qid, stall);
 		debuglog(txt);
 	}
+	*/
 #endif
 	stall_list = (unsigned int*) stall;
 	int ret;
@@ -1214,13 +1326,13 @@ unsigned int* prepareRender3D(unsigned int listId, unsigned int* list, short buf
 
 #ifdef DEBUG_MODE
 	char txt[100];
-	sprintf(txt,"prepare 3D - clear/set pixel mask list:%X\r\n", (unsigned int)list);
+	sprintf(txt,"%u prepare 3D - clear/set pixel mask list:%X\r\n", state, (unsigned int)list);
 	debuglog(txt);
 #endif
 	unsigned int clearFlags;
 	if (withClear){
 #ifdef DEBUG_MODE
-		sprintf(txt, "clear screen on buffer %d:%X\r\n", buffer, frameBuff[buffer]);
+		sprintf(txt, "%u clear screen on buffer %d:%X\r\n", state, buffer, frameBuff[buffer]);
 		debuglog(txt);
 #endif
 		(*list) = (frameBuff[buffer]);
@@ -1377,7 +1489,7 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 	char text[150];
 	if (draw3D > 0) {
 	//	printf("Enqueue Called: %X, Stall: %X\r\n", list, stall);
-		sprintf(text, "Enqueue Called: %X, Stall: %X, cbid: %d, Args: %X\r\n", (unsigned int)list, (unsigned int)stall, cbid, (unsigned int)arg);
+		sprintf(text, "%u Enqueue Called: %X, Stall: %X, cbid: %d, Args: %X\r\n", state, (unsigned int)list, (unsigned int)stall, cbid, (unsigned int)arg);
 		debuglog(text);
 /*		if (arg != 0){
 			sprintf(text, "Args size=%d\r\n", arg->size);
@@ -1412,6 +1524,9 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 #endif
 	}else if (draw3D == 2) {
 			numerek = 0;
+			if (countEnqueueWithOutDisplay >= 0){
+				countEnqueueWithOutDisplay++;
+			}
 #ifdef DEBUG_MODE
 			debuglog("GeListEnqueue - draw3D 2\r\n");
 #endif
@@ -1423,7 +1538,8 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 	} else if (draw3D == 3 || draw3D == 4) {
 		draw3D = 3; //make sure we switch from 4 to 3 to start at the right point in stallUpdate!
 #ifdef DEBUG_MODE
-		debuglog("GeListEnqueue - draw3D 3\r\n");
+		sprintf(text,"%u GeListEnqueue - draw3D 3\r\n" , state);
+		debuglog(text);
 #endif
 		listPassedComplete = 0;
 		//enqueue mean starting new list...we would like to add some initial settings
@@ -1434,15 +1550,15 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 			drawSync = 0;
 */
 			local_list_s = (unsigned int*) (((unsigned int) geList3D[0]) | 0x40000000);
-			pspSdkSetK1(k1);
+			//pspSdkSetK1(k1);
 			listId = sceGeListEnQueue_Func(local_list_s, local_list_s, cbid,0);
-			k1 = pspSdkSetK1(0);
+			//k1 = pspSdkSetK1(0);
 			//prepare 3d-render: clear screen and set pixel mask - do not write red
 			local_list_s = prepareRender3D(listId, local_list_s, state-1, colorModes[currentConfig.colorMode].color1, currentConfig.clearScreen, 0);
-			pspSdkSetK1(k1);
+			//pspSdkSetK1(k1);
 			sceGeListUpdateStallAddr_Func(listId, local_list_s);
 			sceGeListSync_Func(listId, 0);
-			k1 = pspSdkSetK1(0);
+			//k1 = pspSdkSetK1(0);
 //		}
 
 		if (stall == 0){
@@ -1462,20 +1578,20 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 			//current draw
 			//pass current list to hardware and wait until it was processed
 	//		if (numerek < 3){
-			pspSdkSetK1(k1);
+			//pspSdkSetK1(k1);
 			listId = sceGeListEnQueue_Func(MYlocal_list, 0, cbid, arg);
 			sceGeListSync_Func(listId, 0);
-			k1 = pspSdkSetK1(0);
+			//k1 = pspSdkSetK1(0);
 
 			local_list_s = (unsigned int*) (((unsigned int) geList3D[1]) | 0x40000000);
-			pspSdkSetK1(k1);
+			//pspSdkSetK1(k1);
 			listId = sceGeListEnQueue_Func(local_list_s, local_list_s, cbid, arg);
-			k1 = pspSdkSetK1(0);
+			//k1 = pspSdkSetK1(0);
 			local_list_s = prepareRender3D(listId, local_list_s, state-1, colorModes[currentConfig.colorMode].color2, 2, 1);
-			pspSdkSetK1(k1);
+			//pspSdkSetK1(k1);
 			sceGeListUpdateStallAddr_Func(listId, local_list_s);
 			sceGeListSync_Func(listId, 0);
-			k1 = pspSdkSetK1(0);
+			//k1 = pspSdkSetK1(0);
 			// do the second run
 			//make sure there is nothing located in the cache
 			sceKernelDcacheWritebackInvalidateAll();
@@ -1485,7 +1601,7 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 			pixelMaskCount = 0;
 			Render3dStage2(MYlocal_list);
 #ifdef DEBUG_MODE
-		sprintf(text, "viewCount: %d, frameBuffCount: %d, clearCount: %d, pmCount: %d\r\n", viewMatrixCount, frameBuffCount, clearCount, pixelMaskCount);
+		sprintf(text, "%u viewCount: %d, frameBuffCount: %d, clearCount: %d, pmCount: %d\r\n", state, viewMatrixCount, frameBuffCount, clearCount, pixelMaskCount);
 		debuglog(text);
 #endif
 
@@ -1510,15 +1626,15 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 		debuglog("GeListEnqueue - draw3D 9\r\n");
 #endif
 		local_list_s = (unsigned int*) (((unsigned int) geList3D[0])| 0x40000000);
-		pspSdkSetK1(k1);
+		//pspSdkSetK1(k1);
 		listId = sceGeListEnQueue_Func(local_list_s, local_list_s, 0, 0);
-		k1 = pspSdkSetK1(0);
+		//k1 = pspSdkSetK1(0);
 
 		local_list_s = prepareRender3D(listId, local_list_s, 1, 0x000000, 0, 0);
-		pspSdkSetK1(k1);
+		//pspSdkSetK1(k1);
 		sceGeListUpdateStallAddr_Func(listId, local_list_s);
 		sceGeListSync_Func(listId, 0);
-		k1 = pspSdkSetK1(0);
+		//k1 = pspSdkSetK1(0);
 		draw3D = 0;
 		stopCount = 0;
 	}
@@ -1587,13 +1703,50 @@ int sceGeDrawSync3D(int syncType) {
 #ifdef DEBUG_MODE
 	char text[150];
 	if (draw3D > 0) {
-		sceKernelDelayThread(10);
-		sprintf(text, "Draw Synch Called: 3D= %d, type=%d\r\n", draw3D, syncType );
+		//sceKernelDelayThread(10);
+		sprintf(text, "%u Draw Synch Called: 3D= %d, type=%d\r\n",state, draw3D, syncType );
 		debuglog(text);
 	}
 #endif
 
 	nextStart_list = 0;
+
+	if (draw3D == 2){
+#ifdef DEBUG_MODE
+		sprintf(text, "sync - falback? %d, %u\r\n", countEnqueueWithOutDisplay, listPassedComplete);
+		debuglog(text);
+#endif
+		//we have sen games where the sceDisplaySetFrameBuf will never being called ?
+		//or a different function is used
+		//in this case we try to use a "fallback" to be able to proper activate the 3d mode
+		if (countEnqueueWithOutDisplay > 0){
+#ifdef DEBUG_MODE
+			debuglog("fall back display buffer calculation necessary?\r\n");
+#endif
+			countEnqueueWithOutDisplay++;
+			if (countEnqueueWithOutDisplay >= 10){
+#ifdef DEBUG_MODE
+				debuglog("DO!fall back display buffer calculation\r\n");
+#endif
+				//if we have more than 10 calles to enqueue without
+				getFrameBuffFromList(MYlocal_list, frameBuff[state-1], frameBuffW[state-1], 0 );
+				if (frameBuff[0] && frameBuff[1] && frameBuff[0] != frameBuff[1]){
+					draw3D = 3;
+					countEnqueueWithOutDisplay = -1;
+				}
+				state++;
+				if (state > 2) state = 1;
+				if (countEnqueueWithOutDisplay > 20){
+#ifdef DEBUG_MODE
+					debuglog("Unable to set 3D mode\r\n");
+#endif
+					//if the fall beck is not successful we stop the 3D tries ...
+					draw3D = 0;
+				}
+			}
+		}
+	}
+
 	//if the list was not passed complete, but in chunks using update stall
 	//we would need to pass the whole list a second time with the different pixelmask...
 	if (draw3D == 3 && listPassedComplete == 0){
@@ -1602,15 +1755,19 @@ int sceGeDrawSync3D(int syncType) {
 		debuglog(text);
 #endif
 		int interupts = pspSdkDisableInterrupts();
+		debuglog("ds interupts disabled\r\n");
 		unsigned int * local_list_s = (unsigned int*) (((unsigned int) geList3D[1])| 0x40000000);
-		pspSdkSetK1(k1);
+		//pspSdkSetK1(k1);
 		int listId = sceGeListEnQueue_Func(local_list_s, local_list_s, 0, 0);
-		k1 = pspSdkSetK1(0);;
+		debuglog("own list enqueued\r\n");
+		//k1 = pspSdkSetK1(0);;
 		//set pixel mask and clear screen if necessary - do not draw cyan
 		local_list_s = prepareRender3D(listId, local_list_s, state - 1, colorModes[currentConfig.colorMode].color2, 2, 1);
-		pspSdkSetK1(k1);
+		debuglog("3d prepared\r\n");
+		//pspSdkSetK1(k1);
 		sceGeListUpdateStallAddr_Func(listId, local_list_s);
-		k1 = pspSdkSetK1(0);
+		debuglog("own list stalled\r\n");
+		//k1 = pspSdkSetK1(0);
 
 		manipulate = 0;
 		local_list = (unsigned int*)MYlocal_list;
@@ -1620,20 +1777,21 @@ int sceGeDrawSync3D(int syncType) {
 		frameBuffCount = 0;
 		viewMatrixCount = 0;
 		clearCount = 0;
+		debuglog("3d stage 2...\r\n");
 		void* stall = Render3dStage2((unsigned int*)local_list);
 #ifdef DEBUG_MODE
-		sprintf(text, "viewCount: %d, frameBuffCount: %d, clearCount: %d\r\n", viewMatrixCount, frameBuffCount, clearCount);
+		sprintf(text, "%u viewCount: %d, frameBuffCount: %d, clearCount: %d\r\n", state, viewMatrixCount, frameBuffCount, clearCount);
 		debuglog(text);
-		sprintf(text, "List 2:%X - stall: %X\r\n", local_list, stall);
+		sprintf(text, "%u List 2:%X - stall: %X\r\n", state, local_list, stall);
 		debuglog(text);
 #endif
 
 		//make sure there is nothing sitting in the cache
 		sceKernelDcacheWritebackInvalidateAll();
 		//sceKernelIcacheInvalidateAll();
-		pspSdkSetK1(k1);
+		//pspSdkSetK1(k1);
 		listId = sceGeListEnQueue_Func(local_list, 0, 0, 0);
-		k1 = pspSdkSetK1(0);
+		//k1 = pspSdkSetK1(0);
 		//sceGeListSync_Func(listId, 0);
 
 		listPassedComplete = 1;
@@ -1655,6 +1813,8 @@ int sceDisplaySetFrameBuf3D( void * frameBuffer, int buffWidth, int pixelFormat,
 	int k1 = pspSdkSetK1(0);
 	unsigned int temp;
 	char txt[150];
+	countEnqueueWithOutDisplay = -1;
+
 #ifdef DEBUG_MODE
 
 	if (draw3D > 0){
@@ -1662,7 +1822,7 @@ int sceDisplaySetFrameBuf3D( void * frameBuffer, int buffWidth, int pixelFormat,
 		debuglog(txt);
 	}
 #endif
-
+	int interupts = pspSdkDisableInterrupts();
 	//this should be the only place where the games will switch between the framebuffers being
 	//displayed...getting the different draw buffers here
 	if (draw3D == 2){
@@ -1687,7 +1847,7 @@ int sceDisplaySetFrameBuf3D( void * frameBuffer, int buffWidth, int pixelFormat,
 			debuglog(txt);
 #endif
 		}
-		if (frameBuff[0] != 0 && frameBuff[1] != 0 && frameBuff[1] != frameBuff[0]){
+		if (frameBuff[0] != 0 && frameBuff[1] != 0){// && frameBuff[1] != frameBuff[0]){
 			draw3D = 3;
 #ifdef DEBUG_MODE
 			sprintf(txt, "both frame buffer set: %X, %X\r\n", frameBuff[0], frameBuff[1]);
@@ -1709,19 +1869,14 @@ int sceDisplaySetFrameBuf3D( void * frameBuffer, int buffWidth, int pixelFormat,
 
 		if (currentConfig.showStat == 1){
 			sprintf(txt, "A:%.4f;P:%.4f", currentConfig.rotationAngle*180.0f/GU_PI, currentConfig.rotationDistance);
+			debuglog(txt);
 			//pspDebugScreenSetXY(1,1);
 			//pspDebugScreenKprintf(txt);
 		}
 	}
+	pspSdkEnableInterrupts(interupts);
 	pspSdkSetK1(k1);
 	int ret = sceDisplaySetFrameBuf_Func(frameBuffer, buffWidth, pixelFormat, syncMode);
-	if (draw3D == 3){
-		if (currentConfig.showStat == 1){
-				sprintf(txt, "A:%.4f;P:%.4f", currentConfig.rotationAngle*180.0f/GU_PI, currentConfig.rotationDistance);
-				//pspDebugScreenSetXY(1,1);
-				//pspDebugScreenKprintf(txt);
-			}
-	}
 	return ret;
 }
 
