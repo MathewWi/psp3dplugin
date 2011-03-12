@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include "debug.h"
 
-//#define LOG_STDOUT
+#define LOG_STDOUT
 
 int debuglog(const char* txt)//, ...)
 {
@@ -17,7 +17,7 @@ int debuglog(const char* txt)//, ...)
 #ifdef LOG_STDOUT
 	#define PSPLINK_OUT 1
 
-	sceIoWrite(PSPLINK_OUT, string, strlen(string));
+	sceIoWrite(PSPLINK_OUT, txt, strlen(txt));
 	return 0;//fprintf (stdout,string);
 	//return strlen(string);
 #else
@@ -33,8 +33,8 @@ int appendBufferToFile(void * buffer, int buflen)
   // Open File for Appending
   SceUID file = sceIoOpen(LOGFILE, PSP_O_APPEND | PSP_O_CREAT | PSP_O_WRONLY, 0777);
   //if fail try GO file
-//  if (file < 0)
-//	  file = sceIoOpen(LOGFILEGO, PSP_O_APPEND | PSP_O_CREAT | PSP_O_RDWR, 0777);
+  if (file < 0)
+	  file = sceIoOpen(LOGFILEGO, PSP_O_APPEND | PSP_O_CREAT | PSP_O_WRONLY, 0777);
   // Opened File
   if(file >= 0)
   {

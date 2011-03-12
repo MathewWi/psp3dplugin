@@ -22,7 +22,7 @@
 #ifndef CONFIG_H_
 #define CONFIG_H_
 
-#define MAX_COL_MODE 3
+#define MAX_COL_MODE 4
 
 typedef struct {
 	unsigned int clearScreen;

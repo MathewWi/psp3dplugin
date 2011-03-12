@@ -7,6 +7,7 @@
 //trace mode does activate logging all GE-List entries
 //this is to get an idea how the current game is using the same
 //#define TRACE_MODE
+//#define TRACE_LIST_MODE
 
 
 #define LOGFILE "ms0:/psp3d.log"

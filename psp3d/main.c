@@ -218,9 +218,7 @@ int MainThread( SceSize args, void *argp ){
 	currentConfig.activationBtn = 0x800000; //note key//0x400000; // screen key
 #endif
 	while (running){
-		if (firstRun) debuglog("before ctrl read\r\n");
 		sceCtrlPeekBufferPositive(&paddata, 1);
-		if (firstRun) debuglog("after ctrl read\r\n");
 		if(paddata.Buttons != lastButtons)
 		{
 			//
@@ -271,15 +269,15 @@ int MainThread( SceSize args, void *argp ){
 			//press "note" button and magic begin
 			if(paddata.Buttons & currentConfig.activationBtn && noteHandled == 0)
 			{
-#ifdef DEBUG_MODE
+//#ifdef DEBUG_MODE
 				debuglog("ActivationButton pressed\n");
-#endif
+//#endif
 				//activate 3D rendering...
 				if (draw3D == 0){
 #ifdef DEBUG_MODE
 					debuglog("initiate render3D\r\n");
 #endif
-					if (hooked == 0){
+                    if (hooked == 0){
 						hookFunctions();
 						hooked = 1;
 					}
@@ -295,9 +293,7 @@ int MainThread( SceSize args, void *argp ){
 			}
 			lastButtons = paddata.Buttons;
 		}
-		if (firstRun) debuglog("before delay\r\n");
 		sceKernelDelayThread(100000);
-		if (firstRun) debuglog("after delay\r\n");
 		firstRun = 0;
 	}
 	return 0;

@@ -30,7 +30,9 @@
 #include "debug.h"
 #include "config.h"
 #include "hook.h"
+#include "blit.h"
 //#define TRACE_VIEW_MODE
+//#define TRACE_LIST_MODE
 #define ERROR_LOG
 /*
  * the usual steps while working with GE:
@@ -356,11 +358,11 @@ char handleDefaultGeCmd(unsigned int** geList){
 
 	command = (**geList) >> 24;
 	argument = (**geList) & 0xffffff;
-//#ifdef DEBUG_MODE
+#ifdef TRACE_LIST_MODE
 	char txt[100];
 	sprintf(txt,"handle default cmd: %X-%X\r\n", (unsigned int)(*geList),(unsigned int)(**geList) );
 	debuglog(txt);
-//#endif
+#endif
 	switch (command) {
 		case 0x08:
 			//jump to a new display list address
@@ -418,48 +420,6 @@ char handleDefaultGeCmd(unsigned int** geList){
 	return 1; //handled
 }
 /* help method extracts the framebuffer from the display list */
-void getFrameBuffFromList(unsigned int* list, unsigned int* frameB, unsigned int* frameW, void* stall){
-	char parse = 1;
-	char txt[100];
-	unsigned int* local_list;
-
-#ifdef DEBUG_MODE
-		sprintf(txt, "getFramebuff List: %X Stall: %X\r\n", (unsigned int)list, (unsigned int)stall);
-		debuglog(txt);
-#endif
-	adress_number = 0; //reset adress counter for call's/jumps in display list
-	base = 0;
-	local_list = list;
-	while (parse == 1){
-#ifdef TRACE_MODE
-		traceGeCmd(local_list);
-#endif
-		//as long as the current command in the list could not be handled by the default
-		//function continue parsing for the data we are currently interested in
-		if (!handleDefaultGeCmd(&local_list)){
-			if ((*local_list) >> 24 == 0x9C){
-				*frameB = (*local_list);
-				list++;
-				*frameW = (*local_list);
-				parse = 0;
-			}
-			if ((*local_list) >> 24 == 12)
-				parse = 0;
-
-			local_list++;
-		}
-		//in case there is a call in the display list it may target
-		//beyond the stall adress as it goes to an other display list
-		//we should stop in this case only if there is no open call left
-		if (stall && local_list >= stall
-			&& adress_number < 1 ) {
-			parse = 0;
-		}
-	}
-	//count the tries we would like to get the framebuffer
-	getFrameBuffCount++;
-}
-
 /*
  * rotate the current view where the origin of the rotation
  * will be a fix point in front of the camera represented by the view
@@ -817,6 +777,7 @@ void Render3dStage1(unsigned int* currentList){
 			if (command != 12){
 				switch (command){
 					case 0x9c:
+						frameBuffCount++;
 						//current framebuffer
 						//if this framebuffer matches the current one we do activate the manipulation
 						//otherwise the stuff is drawn into a off-screen buffer which
@@ -866,7 +827,7 @@ void Render3dStage1(unsigned int* currentList){
 #endif
 							(*list) &= ((unsigned int) (0xD3 << 24) | (((GU_DEPTH_BUFFER_BIT | GU_STENCIL_BUFFER_BIT) << 8) | 0x01)); //clear flag -> prevent color clear!
 						} //if manipulate == 1
-
+						clearCount++;
 						break;
 
 				}
@@ -956,7 +917,7 @@ void* Render3dStage2(unsigned int* currentList){
 						break;
 					case 0xe9:
 						//pixelmask alpha
-						pixelMaskCount++;
+						//pixelMaskCount++;
 						//prevent pixelmask settings as they "destroy" the 3D renderings
 						if (manipulate == 1 && currentConfig.keepPixelmaskOrigin == 0){
 							(*list) = 0x0;//(unsigned int) (0xE9 << 24) | (0x0); //NOP
@@ -1479,15 +1440,18 @@ unsigned int* prepareRender3D(unsigned int listId, unsigned int* list, short buf
  * within the same GE list step by step forward to pass the other bits to
  * the hardware
  */
+u64 lastTick, currentTick;
+float tickFrequency;
 int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *arg) {
 	int k1 = pspSdkSetK1(0);
 	int listId;
 	short n;
 	unsigned int* local_list_s;
 	unsigned int* local_list;
-#ifdef DEBUG_MODE
 	char text[150];
-	if (draw3D > 0) {
+#ifdef DEBUG_MODE
+
+	if (draw3D > 2) {
 	//	printf("Enqueue Called: %X, Stall: %X\r\n", list, stall);
 		sprintf(text, "%u Enqueue Called: %X, Stall: %X, cbid: %d, Args: %X\r\n", state, (unsigned int)list, (unsigned int)stall, cbid, (unsigned int)arg);
 		debuglog(text);
@@ -1519,6 +1483,7 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 		draw3D = 2;
 		getFrameBuffCount = 0;
 		stopCount = 0;
+		countEnqueueWithOutDisplay = 0;
 #ifdef DEBUG_MODE
 			debuglog("GeListEnqueue - draw3D 1\r\n");
 #endif
@@ -1535,6 +1500,8 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 		if (list != stall && stall == 0){
 			listPassedComplete = 1;
 		}
+		sceRtcGetCurrentTick(&lastTick);
+		tickFrequency = 1.0f / sceRtcGetTickResolution();
 	} else if (draw3D == 3 || draw3D == 4) {
 		draw3D = 3; //make sure we switch from 4 to 3 to start at the right point in stallUpdate!
 #ifdef DEBUG_MODE
@@ -1542,6 +1509,7 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 		debuglog(text);
 #endif
 		listPassedComplete = 0;
+
 		//enqueue mean starting new list...we would like to add some initial settings
 		//first
 		//in case Enqueue is called more than once while one draw pass is executed
@@ -1579,8 +1547,10 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 			//pass current list to hardware and wait until it was processed
 	//		if (numerek < 3){
 			//pspSdkSetK1(k1);
+			int interupts = pspSdkDisableInterrupts();
 			listId = sceGeListEnQueue_Func(MYlocal_list, 0, cbid, arg);
 			sceGeListSync_Func(listId, 0);
+			pspSdkEnableInterrupts(interupts);
 			//k1 = pspSdkSetK1(0);
 
 			local_list_s = (unsigned int*) (((unsigned int) geList3D[1]) | 0x40000000);
@@ -1699,10 +1669,10 @@ int sceGeDrawSync3D(int syncType) {
 	//after each sync check for certain bits of the geList
 	//if (draw3D == 0)
 		//traceGeList(MYlocal_list);
-
-#ifdef DEBUG_MODE
 	char text[150];
-	if (draw3D > 0) {
+#ifdef DEBUG_MODE
+
+	if (draw3D > 2) {
 		//sceKernelDelayThread(10);
 		sprintf(text, "%u Draw Synch Called: 3D= %d, type=%d\r\n",state, draw3D, syncType );
 		debuglog(text);
@@ -1712,37 +1682,13 @@ int sceGeDrawSync3D(int syncType) {
 	nextStart_list = 0;
 
 	if (draw3D == 2){
-#ifdef DEBUG_MODE
-		sprintf(text, "sync - falback? %d, %u\r\n", countEnqueueWithOutDisplay, listPassedComplete);
-		debuglog(text);
-#endif
-		//we have sen games where the sceDisplaySetFrameBuf will never being called ?
+		//we have seen games where the sceDisplaySetFrameBuf will never being called
 		//or a different function is used
-		//in this case we try to use a "fallback" to be able to proper activate the 3d mode
+		//in this case we are currently unable to activate the 3d mode
 		if (countEnqueueWithOutDisplay > 0){
-#ifdef DEBUG_MODE
-			debuglog("fall back display buffer calculation necessary?\r\n");
-#endif
 			countEnqueueWithOutDisplay++;
 			if (countEnqueueWithOutDisplay >= 10){
-#ifdef DEBUG_MODE
-				debuglog("DO!fall back display buffer calculation\r\n");
-#endif
-				//if we have more than 10 calles to enqueue without
-				getFrameBuffFromList(MYlocal_list, frameBuff[state-1], frameBuffW[state-1], 0 );
-				if (frameBuff[0] && frameBuff[1] && frameBuff[0] != frameBuff[1]){
-					draw3D = 3;
-					countEnqueueWithOutDisplay = -1;
-				}
-				state++;
-				if (state > 2) state = 1;
-				if (countEnqueueWithOutDisplay > 20){
-#ifdef DEBUG_MODE
-					debuglog("Unable to set 3D mode\r\n");
-#endif
-					//if the fall beck is not successful we stop the 3D tries ...
 					draw3D = 0;
-				}
 			}
 		}
 	}
@@ -1754,21 +1700,18 @@ int sceGeDrawSync3D(int syncType) {
 		sprintf(text, "pass last list after stall 2nd time %X\r\n", (unsigned int)MYlocal_list);
 		debuglog(text);
 #endif
-		int interupts = pspSdkDisableInterrupts();
-		debuglog("ds interupts disabled\r\n");
+		//int interupts = pspSdkDisableInterrupts();
 		unsigned int * local_list_s = (unsigned int*) (((unsigned int) geList3D[1])| 0x40000000);
 		//pspSdkSetK1(k1);
 		int listId = sceGeListEnQueue_Func(local_list_s, local_list_s, 0, 0);
-		debuglog("own list enqueued\r\n");
+//		debuglog("pass 2 enqueue\r\n");
 		//k1 = pspSdkSetK1(0);;
 		//set pixel mask and clear screen if necessary - do not draw cyan
 		local_list_s = prepareRender3D(listId, local_list_s, state - 1, colorModes[currentConfig.colorMode].color2, 2, 1);
-		debuglog("3d prepared\r\n");
 		//pspSdkSetK1(k1);
 		sceGeListUpdateStallAddr_Func(listId, local_list_s);
-		debuglog("own list stalled\r\n");
+//		debuglog("pass 2 stallupdate clear\r\n");
 		//k1 = pspSdkSetK1(0);
-
 		manipulate = 0;
 		local_list = (unsigned int*)MYlocal_list;
 		//make sure there is nothing sitting in the cache
@@ -1777,7 +1720,7 @@ int sceGeDrawSync3D(int syncType) {
 		frameBuffCount = 0;
 		viewMatrixCount = 0;
 		clearCount = 0;
-		debuglog("3d stage 2...\r\n");
+//		debuglog("before stage 2\r\n");
 		void* stall = Render3dStage2((unsigned int*)local_list);
 #ifdef DEBUG_MODE
 		sprintf(text, "%u viewCount: %d, frameBuffCount: %d, clearCount: %d\r\n", state, viewMatrixCount, frameBuffCount, clearCount);
@@ -1790,12 +1733,19 @@ int sceGeDrawSync3D(int syncType) {
 		sceKernelDcacheWritebackInvalidateAll();
 		//sceKernelIcacheInvalidateAll();
 		//pspSdkSetK1(k1);
+	//	debuglog("pass 2 real list enqueue\r\n");
 		listId = sceGeListEnQueue_Func(local_list, 0, 0, 0);
 		//k1 = pspSdkSetK1(0);
-		//sceGeListSync_Func(listId, 0);
-
+		sceGeListSync_Func(listId, 0);
 		listPassedComplete = 1;
-		pspSdkEnableInterrupts(interupts);
+		//pspSdkEnableInterrupts(interupts);
+		sceRtcGetCurrentTick(&currentTick);
+		float diff = (currentTick - lastTick)*tickFrequency;
+		//if (diff < 0.1f)
+			//sceKernelDelayThread(100000);
+		//sprintf(text,"tick-difference: %u.%.5u\r\n", (u16)diff, (u16)(diff*100000));
+		//debuglog(text);
+		lastTick = currentTick;
 	}
 	manipulate = 0;
 	numerek = 0;
@@ -1847,8 +1797,9 @@ int sceDisplaySetFrameBuf3D( void * frameBuffer, int buffWidth, int pixelFormat,
 			debuglog(txt);
 #endif
 		}
-		if (frameBuff[0] != 0 && frameBuff[1] != 0){// && frameBuff[1] != frameBuff[0]){
+		if (frameBuff[0] != 0 && frameBuff[1] != 0 && frameBuff[1] != frameBuff[0]){
 			draw3D = 3;
+			blit_setup( );
 #ifdef DEBUG_MODE
 			sprintf(txt, "both frame buffer set: %X, %X\r\n", frameBuff[0], frameBuff[1]);
 			debuglog(txt);
@@ -1866,15 +1817,19 @@ int sceDisplaySetFrameBuf3D( void * frameBuffer, int buffWidth, int pixelFormat,
 		else
 			state = 1;
 
-
 		if (currentConfig.showStat == 1){
-			sprintf(txt, "A:%.4f;P:%.4f", currentConfig.rotationAngle*180.0f/GU_PI, currentConfig.rotationDistance);
-			debuglog(txt);
+			float angle = currentConfig.rotationAngle*180.0f/GU_PI;
+			char ah = (char)angle;
+			short al = angle*1000 - (short)ah*1000;
+			char ph = (char)currentConfig.rotationDistance;
+			short pl = currentConfig.rotationDistance*1000 - (short)ph*1000;
+			sprintf(txt, "A: %d.%.3d | P: %d.%.3d", ah, al, ph, pl);
+			blit_string2(frameBuffer,buffWidth,pixelFormat,1,1, txt);
 			//pspDebugScreenSetXY(1,1);
 			//pspDebugScreenKprintf(txt);
 		}
 	}
-	pspSdkEnableInterrupts(interupts);
+    pspSdkEnableInterrupts(interupts);
 	pspSdkSetK1(k1);
 	int ret = sceDisplaySetFrameBuf_Func(frameBuffer, buffWidth, pixelFormat, syncMode);
 	return ret;
