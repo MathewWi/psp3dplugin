@@ -33,11 +33,15 @@ typedef struct {
 	unsigned int keepPixelmaskOrigin;
 	unsigned int lateHook;
 	unsigned int rotAllTime;
+	unsigned int ignoreEnqueueCount;
+	unsigned int flipFlop;
+	unsigned int fixedFrameBuffer;
 	float rotationDistance;
 	float rotationAngle;
 	char showStat;
-	unsigned char colorMode;
+	char colorMode;
 	unsigned char colFlip;
+	unsigned int placeHolder[20];
 	//char rotationAxis;
 }configData;
 
@@ -49,4 +53,7 @@ typedef struct colorMode{
 extern colorMode colorModes[MAX_COL_MODE*2];
 extern int readConfigFile(const char* gameTitle);
 
+extern unsigned char pluginMenuInit();
+extern void pluginMenuDisplay();
+extern unsigned char pluginMenuHansleButton(unsigned int button);
 #endif /* CONFIG_H_ */

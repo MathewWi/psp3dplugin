@@ -66,6 +66,8 @@ int (*sceGeListUpdateStallAddr_Func)(int, void *) = NULL;
 int (*sceGeDrawSync_Func)(int) = NULL;
 /*set framebuffer to display new data from off screen drawing */
 int (*sceDisplaySetFrameBuf_Func)( void *, int, int, int ) = NULL;
+int (*sceDisplayWaitVblankStart_Func)() = NULL;
+int (*sceDisplayWaitVblank_Func)() = NULL;
 /* set GE callback function */
 int (*sceGeSetCallback_Func)(void *) = NULL;
 void (*GeCallback_Func)(int, void *) = NULL;
@@ -96,6 +98,7 @@ int adress_number = 0;
 int can_parse = 0;
 
 char state = 1;
+char renderPass = 0;
 char afterSync = 0;
 char viewMatrixState = 0;
 char countEnqueueWithOutDisplay = 0;
@@ -105,9 +108,11 @@ struct Vertex {
 	u16 pad;
 };
 
-SceUID memid, memid2;
+SceUID memid, memid2, memid3;
 //void *userMemory;
 void *geList3D[2];
+PspGeCallbackData *geCallbacks_orig;
+
 //char list1Ready = 0;
 //char list2Ready = 0;
 char listPassedComplete = 0;
@@ -132,7 +137,16 @@ short stopCount;
 short pixelSize = 0;
 short pixelMaskCount = 0;
 unsigned char drawSync = 0;
-PspGeListArgs *enqueueArg = 0;
+void *enqueueArg = 0;
+typedef struct Interrupts{
+	unsigned int addr;
+	unsigned int value;
+}Interrupts;
+
+unsigned int maxInterrupts = 0;
+unsigned int countInterrupts = 0;
+
+Interrupts interrupts[64];
 /*
  * do the tracing stuff on a display list. All possible commands are listed
  * here and written to the logfile
@@ -355,9 +369,10 @@ unsigned int baseOffset = 0;
 char handleDefaultGeCmd(unsigned int** geList){
 	int command = 0;
 	unsigned int argument = 0;
+	unsigned int* local_list = (*geList);
 
-	command = (**geList) >> 24;
-	argument = (**geList) & 0xffffff;
+	command = (*local_list) >> 24;
+	argument = (*local_list) & 0xffffff;
 #ifdef TRACE_LIST_MODE
 	char txt[100];
 	sprintf(txt,"handle default cmd: %X-%X\r\n", (unsigned int)(*geList),(unsigned int)(**geList) );
@@ -368,7 +383,7 @@ char handleDefaultGeCmd(unsigned int** geList){
 			//jump to a new display list address
 			npc = ((base | argument) + baseOffset) & 0xFFFFFFFC;
 			//jump to new address
-			(*geList) = (unsigned int*) (npc | 0x40000000);
+			(*geList) = (unsigned int*) ((npc) | 0x40000000);
 			break;
 		case 0x09:
 			//sprintf(txt, "conditional jump:%X-%X | base=%X\r\n", (unsigned int)(*geList), (unsigned int)(**geList), base);
@@ -377,7 +392,7 @@ char handleDefaultGeCmd(unsigned int** geList){
 			//just do the jump...
 			npc = ((base | argument) + baseOffset) & 0xFFFFFFFC;
 			//jump to new address
-			(*geList) = (unsigned int*) (npc | 0x40000000);
+			(*geList) = (unsigned int*) ((npc) | 0x40000000);
 			//(*geList)++;
 			break;
 		case 0x10:
@@ -404,7 +419,7 @@ char handleDefaultGeCmd(unsigned int** geList){
 			baseOffset_arr[adress_number] = baseOffset;
 			adress_number++;
 
-			(*geList) = (unsigned int*) (npc | 0x40000000);
+			(*geList) = (unsigned int*) ((npc) | 0x40000000);
 			break;
 		case 0x0b:
 			// returning from call, retrieve last address from stack
@@ -645,11 +660,11 @@ void Rotate3D_VFPU(ScePspFMatrix4* view, const float angle){
 /*
  * just call this if we would like to trace specials GE commands or the whole list
  */
-void traceGeList(unsigned int* currentList){
+unsigned int* traceGeList(unsigned int* currentList){
 
 	short parse = 1;
 	unsigned int *list;
-	unsigned int vbase;
+	unsigned int vbase = 0;
 	int command = 0;
 	unsigned int argument = 0;
 
@@ -715,16 +730,10 @@ void traceGeList(unsigned int* currentList){
 					vbase = (argument << 8) & 0xff000000;
 					break;
 				case 0x01:
-					vertex = (void*)((unsigned int)vbase | argument);
+					vertex = (void*)((unsigned int)base | argument);
 					break;
 				case 0x04:
-					sprintf(txt, "Vertex-Data at:%X, count: %d\r\n", vertex, argument & 0xffff);
-					debuglog(txt);
-					ColorIVertex* vt = (ColorIVertex*)vertex;
-					sprintf(txt, "Vertexdata color, x, y, z, pad:%X, %x,%x,%x, %X\r\n", vt->color, vt->x, vt->y, vt->z, vt->pad);
-					debuglog(txt);
-					vt++;
-					sprintf(txt, "Vertexdata color, x, y, z, pad:%X, %x,%x,%x, %X\r\n", vt->color, vt->x, vt->y, vt->z, vt->pad);
+					sprintf(txt, "Vertex-Data:%X, count: %d\r\n", vertex, argument & 0xffff);
 					debuglog(txt);
 					break;
 				}
@@ -739,29 +748,36 @@ void traceGeList(unsigned int* currentList){
 			list++;
 		}
 	}
+	return list;
 }
+
+
+unsigned int finishEntry;
 /*
  * do the first stage of the 3D rendering. This is intended to be used
  * to make sure the first set pixel mask is kept.
  */
-void Render3dStage1(unsigned int* currentList){
+unsigned int* Render3dStage1(unsigned int* currentList){
 
 	short parse = 1;
 	unsigned int *list;
 	int command = 0;
 	unsigned int argument = 0;
-#ifdef DEBUG_MODE
-    char txt[150];
-    sprintf(txt,"render3d stage 1: %u, %X\r\n", state, frameBuff[state-1] );
-	debuglog(txt);
-#endif
+	char txt[150];
+
 	if (nextStart_list == 0)
 		list = currentList;
 	else
 		list = nextStart_list;
 
 	if (list == 0)
-		return;
+		return 0;
+
+#ifdef DEBUG_MODE
+    sprintf(txt,"render3d stage 1: %u, %X, list: 0x%X\r\n", state, frameBuff[state-1], list );
+	debuglog(txt);
+#endif
+
 	base = 0;
 	adress_number = 0; //reset address counter for call's/jumps in display list
 	baseOffset = 0;
@@ -777,6 +793,10 @@ void Render3dStage1(unsigned int* currentList){
 			if (command != 12){
 				switch (command){
 					case 0x9c:
+#ifdef DEBUG_MODE
+						sprintf(txt, "Framebuffer: 0x%X\r\n", *list);
+						debuglog(txt);
+#endif
 						frameBuffCount++;
 						//current framebuffer
 						//if this framebuffer matches the current one we do activate the manipulation
@@ -789,12 +809,32 @@ void Render3dStage1(unsigned int* currentList){
 						break;
 
 					case 0x0e:
+#ifdef DEBUG_MODE
 						//do not throw the signal on the first run, will be thrown on the second one
 						//(*list) = 0x0; //NOP
-						//debuglog("interupt 1.\r\n");
+	//					sprintf(txt, "before inerrupt 1: 0x%X : 0x%X\r\n", list-1, *(list-1));
+	//					debuglog(txt);
+						sprintf(txt, "inerrupt 1: 0x%X : 0x%X\r\n", list, *list);
+						debuglog(txt);
+						interrupts[maxInterrupts].addr = list;
+						interrupts[maxInterrupts].value = *list;
+						//(*list) = 0x0;
+						maxInterrupts++;
+	//					sprintf(txt, "after 1: 0x%X : 0x%X\r\n", list+1, *(list+1));
+	//					debuglog(txt);
+#endif
 						break;
-
+					case 0x0f:
+//						sprintf(txt, "finish 1: 0x%X : 0x%X\r\n", list, *list);
+//						debuglog(txt);
+//						finishEntry = *list;
+			//			*list = 0x0f << 24;
+						break;
 					case 0xe8:
+#ifdef DEBUG_MODE
+						sprintf(txt, "Pixelmask:0x%X\r\n", *list);
+						debuglog(txt);
+#endif
 						//prevent pixelmask settings as they "destroy" the 3D renderings
 						pixelMaskCount++;
 						if (manipulate == 1 && currentConfig.keepPixelmaskOrigin == 0){
@@ -835,6 +875,10 @@ void Render3dStage1(unsigned int* currentList){
 			} else {
 				parse = 0;
 				stopCount++;
+#ifdef DEBUG_MODE
+				sprintf(txt, "end 1: 0x%X : 0x%X\r\n", list, *list);
+				debuglog(txt);
+#endif
 			}
 			list++;
 		}//!handleDefaultCmd...
@@ -846,6 +890,7 @@ void Render3dStage1(unsigned int* currentList){
 			parse = 0;
 		}
 	}
+	return list;
 }
 
 /*
@@ -863,8 +908,8 @@ void* Render3dStage2(unsigned int* currentList){
 	short modelItem = 0;
 	short projItem = 0;
 
-#ifdef DEBUG_MODE
 	char txt[150];
+#ifdef DEBUG_MODE
 	sprintf(txt,"render3d stage 2: %u, %X\r\n", state, frameBuff[state-1] );
 	debuglog(txt);
 #endif
@@ -890,7 +935,17 @@ void* Render3dStage2(unsigned int* currentList){
 
 			if (command != 12){
 				switch (command){
+					/*case 0x0:
+						if (interrupts[countInterrupts].addr == list){
+							(*list) = interrupts[countInterrupts].value;
+							countInterrupts++;
+						}
+						break;*/
 					case 0x9c:
+#ifdef DEBUG_MODE
+						sprintf(txt, "Framebuffer: 0x%X\r\n", *list);
+						debuglog(txt);
+#endif
 						//current framebuffer
 						//if this framebuffer matches the current one we do activate the manipulation
 						//otherwise the stuff is drawn into a off-screen buffer which
@@ -906,14 +961,26 @@ void* Render3dStage2(unsigned int* currentList){
 					case 0x0e:
 						//do not throw the signal on the second run
 						//(*list) = 0x0; //NOP
-						//debuglog("interrupt 2.\r\n");
+#ifdef DEBUG_MODE
+						sprintf(txt, "inerrupt 2: 0x%X\r\n", *list);
+						debuglog(txt);
+#endif
+						break;
+					case 0x0f:
+//						sprintf(txt, "finish 2: 0x%X : 0x%X\r\n", list, *list);
+	//					debuglog(txt);
+		//				*list = finishEntry;
 						break;
 					case 0xe8:
 						//prevent pixelmask settings as they "destroy" the 3D renderings
 						pixelMaskCount++;
-						if (manipulate == 1 && currentConfig.keepPixelmaskOrigin == 0){
-							(*list) = 0x0;//(unsigned int) (0xE8 << 24) | (currentConfig.color2);
-						}
+//						if (*list == 0xe8ffffff){
+							//(*list) = (unsigned int) (0xE8 << 24) | (colorModes[currentConfig.colorMode].color2);
+//						}else {
+							if (manipulate == 1 && currentConfig.keepPixelmaskOrigin == 0){
+								(*list) = (unsigned int) (0xE8 << 24) | (colorModes[currentConfig.colorMode].color2);
+							}
+//						}
 						break;
 					case 0xe9:
 						//pixelmask alpha
@@ -1130,13 +1197,17 @@ void* Render3dStage2(unsigned int* currentList){
 			} else {
 				parse = 0;
 				stopCount--;
+/*#ifdef DEBUG_MODE
+				sprintf(txt, "finish 2: 0x%X : 0x%X\r\n", list, *list);
+				debuglog(txt);
+#endif*/
 			}
 			list++;
 			if (parse == 0){
-#ifdef DEBUG_MODE
+/*#ifdef DEBUG_MODE
 				sprintf(txt, "%u List after End:%X - stopCount:%d\r\n", state, (unsigned int)(*list), stopCount);
 				debuglog(txt);
-#endif
+#endif*/
 				if (stopCount > 0)
 					parse = 1;
 			}
@@ -1154,46 +1225,10 @@ void* Render3dStage2(unsigned int* currentList){
 	return list;
 }
 
-int sceGeListUpdateStallAddr3D(int qid, void *stall) {
-	//this is where the display list seem to be passed to the GE
-	//for processing
-	//the provided stall adress is the current end of the display list
-	//this would be the starting address for the GE list passed next, therefore
-	//we do not need to run against the whole list each time
-	int k1 = pspSdkSetK1(0);
-#ifdef DEBUG_MODE
-	char txt[150];
-
-/*	if (draw3D > 0) {
-		sprintf(txt, "Update Stall Called: %d, Stall: %X\r\n", qid, stall);
-		debuglog(txt);
-	}
-	*/
-#endif
-	stall_list = (unsigned int*) stall;
-	int ret;
-
-	if (draw3D == 3) {
-//		traceGeList(MYlocal_list);
-		//while update stall is called we do the 3D-Stage1
-		if (currentConfig.needStage1 == 1){
-			//make sure there is nothing located in the cache
-			sceKernelDcacheWritebackInvalidateAll();
-			Render3dStage1(MYlocal_list);
-			sceKernelDcacheWritebackInvalidateAll();
-		}
-	}
-	nextStart_list = (unsigned int*) stall;
-	pspSdkSetK1(k1);
-	ret = sceGeListUpdateStallAddr_Func(qid, stall);
-
-	return ret;
-}
-
 /*
  * setup an own display list to clear the whole screen
  */
-unsigned int* clearScreen(unsigned int* geList, int listId, unsigned int clearFlags) {
+unsigned int* clearScreen(unsigned int* geList, unsigned int clearFlags) {
 
 	unsigned int* local_list = geList;
 	struct Vertex* vertices;
@@ -1270,9 +1305,6 @@ unsigned int* clearScreen(unsigned int* geList, int listId, unsigned int clearFl
 	(*local_list) = (unsigned int) (4 << 24) | (GU_SPRITES << 16 | 2);
 	local_list++;
 
-	//pass to GE
-	//sceGeListUpdateStallAddr_Func(listId, local_list);
-
 	//reset the clear flag
 	(*local_list) = (unsigned int) (0xD3 << 24) | (0x0);
 	local_list++;
@@ -1304,14 +1336,14 @@ unsigned int* prepareRender3D(unsigned int listId, unsigned int* list, short buf
 			clearFlags = (GU_DEPTH_BUFFER_BIT | GU_STENCIL_BUFFER_BIT);
 		else
 			clearFlags = (GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT | GU_STENCIL_BUFFER_BIT);
-		list = clearScreen(list, listId, clearFlags);
+		list = clearScreen(list, clearFlags);
 	}
 	//set pixel mask - do not write the color provided (red/cyan)
 	(*list) = (unsigned int) (0xE8 << 24) | (pixelMask);
 	list++;
 	(*list) = (unsigned int) (0xE9 << 24) | (0x000000);
 	list++;
-
+/*
 	if (currentConfig.addViewMtx == 1){
 #ifdef DEBUG_MODE
 		debuglog("add viewMatrix to list\r\n");
@@ -1421,10 +1453,12 @@ unsigned int* prepareRender3D(unsigned int listId, unsigned int* list, short buf
 										| (((*((u32*) &view.w.z)) >> 8) & 0xffffff);
 		list++;
 	}
+	*/
 
 	//finish the ge list
 	(*list) = 15 << 24;
 	list++;
+	//only finish ! No END - WHY ?
 	(*list) = 12 << 24;
 	list++;
 
@@ -1442,26 +1476,178 @@ unsigned int* prepareRender3D(unsigned int listId, unsigned int* list, short buf
  */
 u64 lastTick, currentTick;
 float tickFrequency;
+void *fBuff1 = 0,
+     *fBuff2 = 0;
+
+void getFramebufferFromList(unsigned int* geList, unsigned int* fb, unsigned int* fbw){
+	short parse = 1;
+	unsigned int *list;
+	int command = 0;
+	unsigned int argument = 0;
+	char fb_found = 0,
+	     fbw_found = 0;
+	list = geList;
+	base = 0;
+	adress_number = 0; //reset address counter for call's/jumps in display list
+	baseOffset = 0;
+
+	while (parse){
+		if (!handleDefaultGeCmd(&list)){
+
+			command = (*list) >> 24;
+			argument = (*list) & 0xffffff;
+
+			if (command != 12){
+				switch (command){
+					case 0x9c:
+						*fb = (*list);
+						fb_found = 1;
+						break;
+					case 0x9d:
+						*fbw = (*list);
+						fbw_found = 1;
+						break;
+				}
+			} else {
+				parse = 0;
+				stopCount++;
+			}
+			list++;
+			if (fb_found && fbw_found)
+				parse = 0;
+		}//!handleDefaultCmd...
+		//in case there is a call in the display list it may target
+		//beyond the stall adress as it goes to an other display list
+		//we should stop in this case only if there is no open call left
+		if ((stall_list && list >= stall_list
+			&& adress_number < 1 )) {
+			parse = 0;
+		}
+	}
+}
+
+char logText[150];
+LogData logData;
+unsigned int counter = 0;
+typedef struct GeListArgs{
+	int size;
+	u32 p1;
+	u32 p2;
+	u32 p3;
+	u32 p4;
+}GeListArgs;
+
+PspGeCallbackData geCallbacks;
+int geCallbackId = -1;
+
+int sceGeListUpdateStallAddr3D(int qid, void *stall) {
+	//this is where the display list seem to be passed to the GE
+	//for processing
+	//the provided stall adress is the current end of the display list
+	//this would be the starting address for the GE list passed next, therefore
+	//we do not need to run against the whole list each time
+	int k1 = pspSdkSetK1(0);
+#ifdef DEBUG_MODE
+	char txt[150];
+
+/*	if (draw3D > 0) {
+		sprintf(txt, "Update Stall Called: %d, Stall: %X\r\n", qid, stall);
+		debuglog(txt);
+	}
+	*/
+#endif
+	stall_list = (unsigned int*) stall;
+	int ret;
+
+	if (draw3D == 3) {
+//		traceGeList(MYlocal_list);
+		//while update stall is called we do the 3D-Stage1
+		//make sure there is nothing located in the cache
+		sceKernelDcacheWritebackInvalidateAll();
+		if (currentConfig.flipFlop == 1){
+			if (state == 1){
+				if (currentConfig.needStage1 == 1){
+					renderPass = 1;
+					Render3dStage1((unsigned int*)MYlocal_list);
+				}
+			} else {
+				renderPass = 2;
+				Render3dStage2((unsigned int*)MYlocal_list);
+				//geCallbackId = sceGeSetCallback_Func(geCallbacks_orig);
+			}
+		} else {
+			if (currentConfig.needStage1 == 1){
+				Render3dStage1(MYlocal_list);
+			}
+		}
+		sceKernelDcacheWritebackInvalidateAll();
+	}
+	nextStart_list = (unsigned int*) stall;
+	pspSdkSetK1(k1);
+	ret = sceGeListUpdateStallAddr_Func(qid, stall);
+
+	return ret;
+}
+
+/*
+ * within GTA this function is triggered as part of an DISPLAY_VBLANK interrupt!
+ * there seem to be limitations to some functions in this case...
+ * I do currently assume this is where drawing to the display buffer takes place..
+ * however, this seem not to be the only Enqueue as the usual enqueues are called differently....
+ */
+/*
+ * FF 7 - CrisisCore uses many signals...
+ * Signals are of a special type and an argument
+ * 0x0eSSaaaa
+ * there is always used signal 01 with different arguments..
+ * once argument is 0x64 the PSP crashes if the display list is passed 2nd time during one render step...
+ */
+/*
+ * FIFA 11 calls Enqueue twice...need to ignore the second run (see config) !
+ */
+short enqueueRun = 0;
 int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *arg) {
 	int k1 = pspSdkSetK1(0);
 	int listId;
 	short n;
 	unsigned int* local_list_s;
+	unsigned int* ll_start;
 	unsigned int* local_list;
 	char text[150];
-#ifdef DEBUG_MODE
 
-	if (draw3D > 2) {
-	//	printf("Enqueue Called: %X, Stall: %X\r\n", list, stall);
-		sprintf(text, "%u Enqueue Called: %X, Stall: %X, cbid: %d, Args: %X\r\n", state, (unsigned int)list, (unsigned int)stall, cbid, (unsigned int)arg);
+/*	if (draw3D > 0) {
+
+		if (sceKernelIsIntrContext() == 1){
+			//this seem to be the case in GTA when rendering to the screen..
+			//assumed is rendering to an off screen area and using this as texture to render
+			//to on-screen within a VBlank-Wait interrupt..
+			//we do ignore this kind of list from plugin point of view
+			//however, this occurs on each vBlank...which would be 60 times per sec.
+			//guessing that there have to be a call back in place indicating that the real drawing
+			//has taken place...
+			//char* txt = "Enqueue-Interrupt: %X, Stall: %X, counter: %d\r\n";
+			//strncpy(logText, txt, strlen(txt));
+			logData.txt = "Enqueue-Interrupt: %X, Stall: %X, cbid: %d\r\n";
+			logData.p1 = (unsigned int)list;
+			logData.p2 = (unsigned int)stall;
+			logData.p3 = cbid;
+			debuglog_special(&logData);
+
+			pspSdkSetK1(k1);
+			return sceGeListEnQueue_Func(list, stall, cbid, arg);
+		//	debuglog("interrupt context\r\n");
+		}
+	}
+*/
+#ifdef DEBUG_MODE
+	if (draw3D > 0){
+		//	printf("Enqueue Called: %X, Stall: %X\r\n", list, stall);
+		sprintf(text, "Enqueue Called: %X, Stall: %X, cbid: %d, Args: %X\r\n", (unsigned int)list, (unsigned int)stall, cbid, (unsigned int)arg);
 		debuglog(text);
-/*		if (arg != 0){
-			sprintf(text, "Args size=%d\r\n", arg->size);
+		/*if (arg != 0){
+			GeListArgs* test = (GeListArgs*)arg;
+			sprintf(text, "Args1:0x%X, Args2:0x%X, Args3:0x%X, Args4:0x%X, Args5:0x%X\r\n", test->size, test->p1, test->p2, test->p3, test->p4);
 			debuglog(text);
-			for (n=0;n<arg->size;n++){
-				sprintf(text, "%u:%u\r\n", n,((unsigned char*)&arg->context)[n]);
-				debuglog(text);
-			}
 		}*/
 	}
 #endif
@@ -1470,6 +1656,7 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 	nextStart_list = 0;
 	//manipulate = 0; //reset the manipulation
 	MYlocal_list = (unsigned int*) (((unsigned int) list) | 0x40000000);
+	enqueueArg = arg;
 
 	if (draw3D == 1){
 		//start new 3d mode, reset some data
@@ -1492,6 +1679,25 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 			if (countEnqueueWithOutDisplay >= 0){
 				countEnqueueWithOutDisplay++;
 			}
+			if (countEnqueueWithOutDisplay > 10){
+				//we have never seen the sceDisplaySetFrameBuff function, we need to get the
+				//different framebuffer from the diplay list..
+#ifdef DEBUG_MODE
+				debuglog("fallback framebuffer\r\n");
+#endif
+				getFramebufferFromList((unsigned int*)MYlocal_list, &frameBuff[state-1], &frameBuffW[state-1]);
+#ifdef DEBUG_MODE
+				sprintf(text, "framebuffer %u : %X\r\n", state, frameBuff[state-1]);
+				debuglog(text);
+#endif
+				if (frameBuff[0] && frameBuff[1]){
+#ifdef DEBUG_MODE
+					sprintf(text, "Fallback framebuffer found; %X - %X\r\n", frameBuff[0], frameBuff[1]);
+					debuglog(text);
+#endif
+					draw3D = 4;
+				}
+			}
 #ifdef DEBUG_MODE
 			debuglog("GeListEnqueue - draw3D 2\r\n");
 #endif
@@ -1500,111 +1706,191 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 		if (list != stall && stall == 0){
 			listPassedComplete = 1;
 		}
-		sceRtcGetCurrentTick(&lastTick);
-		tickFrequency = 1.0f / sceRtcGetTickResolution();
+		//sceRtcGetCurrentTick(&lastTick);
+		//tickFrequency = 1.0f / sceRtcGetTickResolution();
 	} else if (draw3D == 3 || draw3D == 4) {
+		//make there there is no interupt interfering with the following processing
+		//int flags = sceKernelSuspendIntr();
 		draw3D = 3; //make sure we switch from 4 to 3 to start at the right point in stallUpdate!
+
 #ifdef DEBUG_MODE
 		sprintf(text,"%u GeListEnqueue - draw3D 3\r\n" , state);
 		debuglog(text);
 #endif
-		listPassedComplete = 0;
 
+		//traceGeList(list);
+
+		listPassedComplete = 0;
+		stopCount = 0;
+		renderPass = 1;
+		enqueueRun++;
+		if (currentConfig.ignoreEnqueueCount && enqueueRun > currentConfig.ignoreEnqueueCount){
+			//ignore the second run on FIFA 11
+			//debuglog("ignore enqueue run\r\n");
+			//reset the pixelmask for this run...
+			local_list_s = (unsigned int*) (((unsigned int) geList3D[0])| 0x40000000);
+			listId = sceGeListEnQueue_Func(local_list_s, local_list_s, 0, 0);
+
+			local_list_s = prepareRender3D(listId, local_list_s, 1, 0x000000, 0, 0);
+			sceGeListUpdateStallAddr_Func(listId, local_list_s);
+			sceGeListSync_Func(listId, 0);
+			pspSdkSetK1(k1);
+			return sceGeListEnQueue_Func(list, stall, cbid, arg);
+		}
+//		unsigned int interruptState = sceKernelCpuSuspendIntr();
+		/*if (geCallbackId >= 0){
+			debuglog("re-set callback\r\n");
+			sceGeUnsetCallback(geCallbackId);
+			geCallbackId = sceGeSetCallback_Func(geCallbacks_orig);
+			geCallbackId = -2;
+		}*/
 		//enqueue mean starting new list...we would like to add some initial settings
 		//first
 		//in case Enqueue is called more than once while one draw pass is executed
 		//we check for the flag drawSync which is set once the last draw has finished
-/*		if (drawSync == 1){
-			drawSync = 0;
-*/
-			local_list_s = (unsigned int*) (((unsigned int) geList3D[0]) | 0x40000000);
-			//pspSdkSetK1(k1);
-			listId = sceGeListEnQueue_Func(local_list_s, local_list_s, cbid,0);
-			//k1 = pspSdkSetK1(0);
-			//prepare 3d-render: clear screen and set pixel mask - do not write red
+		local_list_s = (unsigned int*) (((unsigned int) geList3D[0]) | 0x40000000);
+		ll_start = local_list_s;
+		//listId = sceGeListEnQueue_Func(local_list_s, local_list_s, 0,0);
+		//prepare 3d-render: clear screen and set pixel mask - do not write red
+		if (currentConfig.flipFlop == 0){
 			local_list_s = prepareRender3D(listId, local_list_s, state-1, colorModes[currentConfig.colorMode].color1, currentConfig.clearScreen, 0);
-			//pspSdkSetK1(k1);
-			sceGeListUpdateStallAddr_Func(listId, local_list_s);
-			sceGeListSync_Func(listId, 0);
-			//k1 = pspSdkSetK1(0);
-//		}
+		} else {
+			if (state == 1){
+				local_list_s = prepareRender3D(listId, local_list_s, state-1, colorModes[currentConfig.colorMode].color1, currentConfig.clearScreen, 0);
+			} else{
+				local_list_s = prepareRender3D(listId, local_list_s, state-1, colorModes[currentConfig.colorMode].color2, currentConfig.clearScreen, 0);
+			}
+		}
+		//sceGeListUpdateStallAddr_Func(listId, local_list_s);
+//		debuglog("enqueue local list\r\n");
+		listId = sceGeListEnQueue_Func(ll_start, 0, 0,0);
+		//debuglog("sync local list\r\n");
+		//sceGeListSync_Func(listId, 0);
 
 		if (stall == 0){
+			//traceGeList((unsigned int*)list);
 			listPassedComplete = 1;
 			//now manipulate the GE list to change the view-Matrix
-			numerek++;
-			if (currentConfig.needStage1 == 1){// && numerek < 3){
-				//make sure there is nothing located in the cache
-				sceKernelDcacheWritebackInvalidateAll();
-				Render3dStage1((unsigned int*)MYlocal_list);
-				//make sure there is nothing located in the cache
-				sceKernelDcacheWritebackInvalidateAll();
+			if (currentConfig.flipFlop == 0){
+				//Gods Eater does work stable only if we switch red/cyan mode each frame
+				//and do not pass the display list twice..this does stop rendering for an unknown reason..
+				if (currentConfig.needStage1 == 1){// && numerek < 3){
+					//make sure there is nothing located in the cache
+					sceKernelDcacheWritebackInvalidateAll();
+	#ifdef DEBUG_MODE
+					sprintf(text, "Stage 1 List 0x%X\r\n", MYlocal_list);
+					debuglog(text);
+	#endif
+					maxInterrupts = 0;
+					Render3dStage1((unsigned int*)MYlocal_list);
+					//make sure there is nothing located in the cache
+					sceKernelDcacheWritebackInvalidateAll();
+				}
 			}
-			//	sceKernelIcacheInvalidateAll();
+			if (currentConfig.flipFlop == 1){
+				if (state == 1){
+					if (currentConfig.needStage1 == 1){
+						renderPass = 1;
+						Render3dStage1((unsigned int*)MYlocal_list);
+						//debuglog("after stage 1 manipulation\r\n");
+					//debuglog("pass 1. enqueue\r\n");
+	//				sceGeListEnQueue_Func((unsigned int*)list, 0, cbid, arg);
+					//renderPass = 2;
+					//sceGeListEnQueue_Func((unsigned int*)list, 0, 0, 0);
+					//debuglog("set call back again\r\n");
+					//geCallbackId = sceGeSetCallback_Func(geCallbacks_orig);
+					//debuglog("call back reset\r\n");
+					}
+				} else {
+					renderPass = 2;
+					Render3dStage2((unsigned int*)MYlocal_list);
+					//geCallbackId = sceGeSetCallback_Func(geCallbacks_orig);
+				}
+			} else {
 
-			//try to render the second frame at the same time to overlay the
-			//current draw
-			//pass current list to hardware and wait until it was processed
-	//		if (numerek < 3){
-			//pspSdkSetK1(k1);
-			int interupts = pspSdkDisableInterrupts();
-			listId = sceGeListEnQueue_Func(MYlocal_list, 0, cbid, arg);
-			sceGeListSync_Func(listId, 0);
-			pspSdkEnableInterrupts(interupts);
-			//k1 = pspSdkSetK1(0);
+				//try to render the second frame at the same time to overlay the
+				//current draw
+				//pass current list to hardware and wait until it was processed
 
-			local_list_s = (unsigned int*) (((unsigned int) geList3D[1]) | 0x40000000);
-			//pspSdkSetK1(k1);
-			listId = sceGeListEnQueue_Func(local_list_s, local_list_s, cbid, arg);
-			//k1 = pspSdkSetK1(0);
-			local_list_s = prepareRender3D(listId, local_list_s, state-1, colorModes[currentConfig.colorMode].color2, 2, 1);
-			//pspSdkSetK1(k1);
-			sceGeListUpdateStallAddr_Func(listId, local_list_s);
-			sceGeListSync_Func(listId, 0);
-			//k1 = pspSdkSetK1(0);
-			// do the second run
-			//make sure there is nothing located in the cache
+				//debuglog("pass list 1. time\r\n");
+				listId = sceGeListEnQueue_Func((unsigned int*)list, 0, cbid, arg);
+				//debuglog("sync 1. pass\r\n");
+				sceGeListSync_Func(listId, 0);
+
+				local_list_s = (unsigned int*) (((unsigned int) geList3D[1]) | 0x40000000);
+				ll_start = local_list_s;
+				//listId = sceGeListEnQueue_Func(local_list_s, local_list_s, 0, 0);
+				local_list_s = prepareRender3D(listId, local_list_s, state-1, colorModes[currentConfig.colorMode].color2, 2, 1);
+				//sceGeListUpdateStallAddr_Func(listId, local_list_s);
+				//debuglog("enqueue local list2\r\n");
+				listId = sceGeListEnQueue_Func(ll_start, 0, 0,0);
+				//debuglog("sync local list2\r\n");
+				//sceGeListSync_Func(listId, 0);
+
+				// do the second run
+				//make sure there is nothing located in the cache
+				sceKernelDcacheWritebackInvalidateAll();
+				frameBuffCount = 0;
+				viewMatrixCount = 0;
+				clearCount = 0;
+				pixelMaskCount = 0;
+				countInterrupts = 0;
+/*#ifdef DEBUG_MODE
+			sprintf(text, "Stage 2 List 0x%X\r\n", MYlocal_list);
+			debuglog(text);
+#endif*/
+				Render3dStage2((unsigned int*)MYlocal_list);
+				renderPass = 2;
+	#ifdef DEBUG_MODE
+			sprintf(text, "%u viewCount: %d, frameBuffCount: %d, clearCount: %d, pmCount: %d\r\n", state, viewMatrixCount, frameBuffCount, clearCount, pixelMaskCount);
+			debuglog(text);
+	#endif
+				//make sure there is nothing located in the cache
+
+			}
 			sceKernelDcacheWritebackInvalidateAll();
-			frameBuffCount = 0;
-			viewMatrixCount = 0;
-			clearCount = 0;
-			pixelMaskCount = 0;
-			Render3dStage2(MYlocal_list);
-#ifdef DEBUG_MODE
-		sprintf(text, "%u viewCount: %d, frameBuffCount: %d, clearCount: %d, pmCount: %d\r\n", state, viewMatrixCount, frameBuffCount, clearCount, pixelMaskCount);
-		debuglog(text);
-#endif
-
-			//make sure there is nothing located in the cache
-			sceKernelDcacheWritebackInvalidateAll();
-			//sceKernelIcacheInvalidateAll();
-//			}
+	//		sceKernelCpuResumeIntr(interruptState);
 		}else if (list != stall){
 			//while update stall is called we do the 3D-Stage1
-			if (currentConfig.needStage1 == 1){
 				//make sure there is nothing located in the cache
 				sceKernelDcacheWritebackInvalidateAll();
-				Render3dStage1(MYlocal_list);
+				if (currentConfig.flipFlop == 1){
+					if (state == 1){
+						if (currentConfig.needStage1 == 1){
+							renderPass = 1;
+							Render3dStage1((unsigned int*)MYlocal_list);
+						}
+					} else {
+						renderPass = 2;
+						Render3dStage2((unsigned int*)MYlocal_list);
+						//geCallbackId = sceGeSetCallback_Func(geCallbacks_orig);
+					}
+				} else {
+					if (currentConfig.needStage1 == 1){
+						renderPass = 1;
+						Render3dStage1((unsigned int*)MYlocal_list);
+					}
+				}
 				sceKernelDcacheWritebackInvalidateAll();
-			}
-			nextStart_list = (unsigned int*) stall;
+			nextStart_list = (unsigned int*) ((unsigned int)stall | 0x40000000);
 		}
 		afterSync = 0;
+		//sceKernelResumeIntr(flags);
+		//geCallbackId = sceGeSetCallback_Func(geCallbacks_orig);
+		//debuglog("set callback\r\n");
+
 	} else if (draw3D == 9) {
 		//stop 3D mode requested...set back the pixel mask
 #ifdef DEBUG_MODE
 		debuglog("GeListEnqueue - draw3D 9\r\n");
 #endif
+		renderPass = 1;
 		local_list_s = (unsigned int*) (((unsigned int) geList3D[0])| 0x40000000);
-		//pspSdkSetK1(k1);
 		listId = sceGeListEnQueue_Func(local_list_s, local_list_s, 0, 0);
-		//k1 = pspSdkSetK1(0);
 
 		local_list_s = prepareRender3D(listId, local_list_s, 1, 0x000000, 0, 0);
-		//pspSdkSetK1(k1);
 		sceGeListUpdateStallAddr_Func(listId, local_list_s);
 		sceGeListSync_Func(listId, 0);
-		//k1 = pspSdkSetK1(0);
 		draw3D = 0;
 		stopCount = 0;
 	}
@@ -1614,14 +1900,16 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 	//
 	stall_addres = (unsigned int) &stall;
 	stall_list = 0;
-
+#ifdef DEBUG_MODE
+	if (draw3D == 3)
+		debuglog("before pass geList using orig. Function\r\n");
+#endif
 	pspSdkSetK1(k1);
 	int ret = sceGeListEnQueue_Func(list, stall, cbid, arg);
 	return (ret);
 }
 
-static int sceGeListEnQueue3DHead(const void *list, void *stall, int cbid,
-		PspGeListArgs *arg) {
+int sceGeListEnQueue3DHead(const void *list, void *stall, int cbid, PspGeListArgs *arg) {
 #ifdef DEBUG_MODE
 	debuglog("GeListEnQueueHead\n");
 #endif
@@ -1629,7 +1917,7 @@ static int sceGeListEnQueue3DHead(const void *list, void *stall, int cbid,
 	return (ret);
 }
 
-static int MYsceGeListDeQueue(int qid) {
+int MYsceGeListDeQueue(int qid) {
 #ifdef DEBUG_MODE
 	debuglog("GeListDeQueue\n");
 #endif
@@ -1672,30 +1960,34 @@ int sceGeDrawSync3D(int syncType) {
 	char text[150];
 #ifdef DEBUG_MODE
 
-	if (draw3D > 2) {
+	if (draw3D > 0) {
 		//sceKernelDelayThread(10);
-		sprintf(text, "%u Draw Synch Called: 3D= %d, type=%d\r\n",state, draw3D, syncType );
+		if (sceKernelIsIntrContext() == 1){
+			//this seem to be the case in GTA when rendering to the screen..
+			//assumed is rendering to an offscreen area and using this as texture to render
+			//to on-screen within a VBlank-Wait interrupt..
+			//we do ignore this kind of list...
+			char* txt = "DrawSync\r\n";
+			strncpy(logText, txt, strlen(txt));
+			logData.txt = logText;
+			logData.p1 = 0;
+			logData.p2 = 0;
+			logData.p3 = 0;
+			debuglog_special(&logData);
+			pspSdkSetK1(k1);
+			MYlocal_list = 0;
+			int ret = sceGeDrawSync_Func(syncType);
+		}
+		sprintf(text, "%u Draw Synch Called: 3D= %d, type=%d\r\n",state, draw3D, syncType);
 		debuglog(text);
 	}
 #endif
 
 	nextStart_list = 0;
 
-	if (draw3D == 2){
-		//we have seen games where the sceDisplaySetFrameBuf will never being called
-		//or a different function is used
-		//in this case we are currently unable to activate the 3d mode
-		if (countEnqueueWithOutDisplay > 0){
-			countEnqueueWithOutDisplay++;
-			if (countEnqueueWithOutDisplay >= 10){
-					draw3D = 0;
-			}
-		}
-	}
-
 	//if the list was not passed complete, but in chunks using update stall
 	//we would need to pass the whole list a second time with the different pixelmask...
-	if (draw3D == 3 && listPassedComplete == 0){
+	if (draw3D == 3 && listPassedComplete == 0 && currentConfig.flipFlop == 0){
 #ifdef DEBUG_MODE
 		sprintf(text, "pass last list after stall 2nd time %X\r\n", (unsigned int)MYlocal_list);
 		debuglog(text);
@@ -1734,7 +2026,7 @@ int sceGeDrawSync3D(int syncType) {
 		//sceKernelIcacheInvalidateAll();
 		//pspSdkSetK1(k1);
 	//	debuglog("pass 2 real list enqueue\r\n");
-		listId = sceGeListEnQueue_Func(local_list, 0, 0, 0);
+		listId = sceGeListEnQueue_Func(local_list, 0, 0, enqueueArg);
 		//k1 = pspSdkSetK1(0);
 		sceGeListSync_Func(listId, 0);
 		listPassedComplete = 1;
@@ -1756,6 +2048,31 @@ int sceGeDrawSync3D(int syncType) {
 	return ret;
 }
 
+int sceDisplayWaitVblankStart3D(){
+	int k1 = pspSdkSetK1(0);
+#ifdef DEBUG_MODE
+	if (draw3D > 0){
+		debuglog("WaitVBlankStart\r\n");
+		sceKernelDelayThread(100000);
+	}
+#endif
+	pspSdkSetK1(k1);
+	int ret = sceDisplayWaitVblankStart_Func();
+	return ret;
+}
+
+int sceDisplayWaitVblank3D(){
+	int k1 = pspSdkSetK1(0);
+#ifdef DEBUG_MODE
+	if (draw3D > 0){
+		debuglog("WaitVBlank\r\n");
+		sceKernelDelayThread(100000);
+	}
+#endif
+	pspSdkSetK1(k1);
+	int ret = sceDisplayWaitVblankStart_Func();
+	return ret;
+}
 /*
  * setting the display'd framebuffer to a new address
  */
@@ -1768,14 +2085,37 @@ int sceDisplaySetFrameBuf3D( void * frameBuffer, int buffWidth, int pixelFormat,
 #ifdef DEBUG_MODE
 
 	if (draw3D > 0){
-		sprintf(txt, "setDisplayBuff - %X, %u, %u, %u\r\n", frameBuffer, buffWidth, pixelFormat, syncMode);
-		debuglog(txt);
+		if (sceKernelIsIntrContext() == 1){
+			//this seem to be the case in GTA when rendering to the screen..
+			//assumed is rendering to an off screen area and using this as texture to render
+			//to on-screen within a VBlank-Wait interrupt..
+			//we do ignore this kind of list from plugin point of view
+			//however, this occurs on each vBlank...which would be 60 times per sec.
+			//guessing that there have to be a call back in place indicating that the real drawing
+			//has taken place...
+			//char* txt = "Enqueue-Interrupt: %X, Stall: %X, counter: %d\r\n";
+			//strncpy(logText, txt, strlen(txt));
+			logData.txt = "Interrupt:setDisplayBuff - %X, %u, %u\r\n";
+			logData.p1 = (unsigned int)frameBuffer;
+			logData.p2 = (unsigned int)buffWidth;
+			logData.p3 = (unsigned int)pixelFormat;
+			debuglog_special(&logData);
+		}else{
+			sprintf(txt, "setDisplayBuff - %X, %u, %u, %u\r\n", frameBuffer, buffWidth, pixelFormat, syncMode);
+			debuglog(txt);
+		}
+		//sceKernelDelayThread(10000);
 	}
 #endif
-	int interupts = pspSdkDisableInterrupts();
+	//int interupts = pspSdkDisableInterrupts();
 	//this should be the only place where the games will switch between the framebuffers being
 	//displayed...getting the different draw buffers here
 	if (draw3D == 2){
+		if (fBuff1 == 0) fBuff1 = frameBuffer;
+		if (fBuff2 == 0 && fBuff1 != frameBuffer){
+		//	draw3D = 3;
+
+		}
 		temp = ((unsigned int)0x9c << 24) | ((unsigned int)frameBuffer & 0x00ffffff);
 #ifdef DEBUG_MODE
 		sprintf(txt, "current buffer: %X\r\n", temp);
@@ -1797,18 +2137,28 @@ int sceDisplaySetFrameBuf3D( void * frameBuffer, int buffWidth, int pixelFormat,
 			debuglog(txt);
 #endif
 		}
-		if (frameBuff[0] != 0 && frameBuff[1] != 0 && frameBuff[1] != frameBuff[0]){
-			draw3D = 3;
-			blit_setup( );
+		if (frameBuff[0] != 0 && frameBuff[1] != 0){
+			if (currentConfig.fixedFrameBuffer == 0 && frameBuff[1] != frameBuff[0]){
+				draw3D = 3;
+			}
+			if (currentConfig.fixedFrameBuffer != 0){
+				//in case of FiFa 11 the display buffer is always the same...the frame buffer as well
+				//TODO:FB for FIFA is fixed..frameBuff[0] = frameBuff[1] = 0x9C044000;
+				frameBuff[0] = frameBuff[1] = ((unsigned int) 0x9C << 24) | (currentConfig.fixedFrameBuffer & 0xfffff);
+				draw3D = 3;
+			}
+			if (draw3D == 3){
+				//blit_setup( );
 #ifdef DEBUG_MODE
 			sprintf(txt, "both frame buffer set: %X, %X\r\n", frameBuff[0], frameBuff[1]);
 			debuglog(txt);
 #endif
+			}
 		}
 
 	}
 	if (draw3D == 3){
-
+		enqueueRun = 0;
 		//sceKernelDelayThread(1000);
 		pixelSize = pixelFormat;
 		temp = ((unsigned int)0x9c << 24) | ((unsigned int)frameBuffer & 0xffffff);
@@ -1816,7 +2166,7 @@ int sceDisplaySetFrameBuf3D( void * frameBuffer, int buffWidth, int pixelFormat,
 			state = 2;
 		else
 			state = 1;
-
+/*
 		if (currentConfig.showStat == 1){
 			float angle = currentConfig.rotationAngle*180.0f/GU_PI;
 			char ah = (char)angle;
@@ -1825,24 +2175,29 @@ int sceDisplaySetFrameBuf3D( void * frameBuffer, int buffWidth, int pixelFormat,
 			short pl = currentConfig.rotationDistance*1000 - (short)ph*1000;
 			sprintf(txt, "A: %d.%.3d | P: %d.%.3d", ah, al, ph, pl);
 			blit_string2(frameBuffer,buffWidth,pixelFormat,1,1, txt);
-			//pspDebugScreenSetXY(1,1);
-			//pspDebugScreenKprintf(txt);
 		}
+		*/
 	}
-    pspSdkEnableInterrupts(interupts);
+    //pspSdkEnableInterrupts(interupts);
 	pspSdkSetK1(k1);
 	int ret = sceDisplaySetFrameBuf_Func(frameBuffer, buffWidth, pixelFormat, syncMode);
 	return ret;
 }
 
+void (*geFinishCallBack)(int, void * arg) = NULL;
+
 void GeCallback3D(int id, void* arg){
-#ifdef DEBUG_MODE
+//#ifdef DEBUG_MODE
 	char txt[100];
-	sprintf(txt, "Callback called: %d\r\n", (unsigned int)id);
-	debuglog(txt);
-#endif
-	if (GeCallback_Func != NULL)
-		GeCallback_Func(id, arg);
+//#endif
+	if (draw3D == 3){
+		sprintf(txt, "CB id: %u, pass: %u\r\n", id, renderPass);
+		debuglog(txt);
+		if (renderPass == 1) return;
+		if (renderPass == 2 && GeCallback_Func != NULL) GeCallback_Func(id, arg);
+	} else {
+		if (GeCallback_Func != NULL) GeCallback_Func(id, arg);
+	}
 }
 
 int sceGeSetCallback3D(PspGeCallbackData *cb){
@@ -1850,16 +2205,37 @@ int sceGeSetCallback3D(PspGeCallbackData *cb){
 	int k1 = pspSdkSetK1(0);
 #ifdef DEBUG_MODE
 	char txt[100];
+	if (sceKernelIsIntrContext() == 1){
+		//this seem to be the case in GTA when rendering to the screen..
+		//assumed is rendering to an off screen area and using this as texture to render
+		//to on-screen within a VBlank-Wait interrupt..
+		//we do ignore this kind of list from plugin point of view
+		//however, this occurs on each vBlank...which would be 60 times per sec.
+		//guessing that there have to be a call back in place indicating that the real drawing
+		//has taken place...
+		//char* txt = "Enqueue-Interrupt: %X, Stall: %X, counter: %d\r\n";
+		//strncpy(logText, txt, strlen(txt));
+		logData.txt = "IR - GeSetCallback data: Signal:%X, Finish:%X\r\n";
+		logData.p1 = (unsigned int)cb->signal_func;
+		logData.p2 = (unsigned int)cb->finish_arg;
+		logData.p3 = 0;
+		debuglog_special(&logData);
+	}else {
 	sprintf(txt, "GeSetCallback: %X\r\n", (unsigned int)cb);
 	debuglog(txt);
-	sprintf(txt, "GeSetCallback data: Signal:%X - Arg:%X, Finish:%X\ - Arg:%X\r\n", (unsigned int)cb->signal_func,(unsigned int)cb->signal_arg, (unsigned int)cb->finish_func, (unsigned int)cb->finish_arg);
+	sprintf(txt, "GeSetCallback data: Signal:%X - Arg:%X, Finish:%X - Arg:%X, mycb:%X\r\n", (unsigned int)cb->signal_func,(unsigned int)cb->signal_arg, (unsigned int)cb->finish_func, (unsigned int)cb->finish_arg, (unsigned int)GeCallback3D);
 	debuglog(txt);
+	}
 #endif
-	//GeCallback_Func = cb->signal_func;
-	//cb_d.signal_func = GeCallback3D;
+	//store the current callback settings
+	(*geCallbacks_orig) = (*cb);
+	//geFinishCallBack = cb->finish_func;
+	GeCallback_Func = cb->finish_func;
+	geCallbacks_orig->finish_func = GeCallback3D;
 
 	pspSdkSetK1(k1);
 	int ret = sceGeSetCallback_Func(cb);
+	geCallbackId = ret;
 	return ret;
 }
 
@@ -1926,6 +2302,8 @@ void hookFunctions(void) {
 	geList3D[0] = sceKernelGetBlockHeadAddr(memid);
 	geList3D[1] = sceKernelGetBlockHeadAddr(memid2);
 
+	memid3 = sceKernelAllocPartitionMemory(2, "myGEcallback", 0, 2*sizeof(PspGeCallbackData), NULL);
+	geCallbacks_orig = (PspGeCallbackData*)sceKernelGetBlockHeadAddr(memid3);
 #ifdef DEBUG_MODE
 	debuglog("Start hooking display\r\n");
 	sprintf(txt, "HEN Version : %X\r\n", sctrlHENGetVersion());
@@ -1954,6 +2332,35 @@ void hookFunctions(void) {
 #endif
 	}
 
+	originalAddr = sctrlHENFindFunction("sceDisplay_Service", "sceDisplay", 0x984C27E7);
+	if (originalAddr != NULL){
+		sctrlHENPatchSyscall(originalAddr, sceDisplayWaitVblankStart3D);
+		sceKernelDcacheWritebackInvalidateAll();
+		sceKernelIcacheInvalidateAll();
+		sceDisplayWaitVblankStart_Func = (void*)originalAddr;
+//	sprintf(txt, "DisplayBuff addr: %X\r\n", originalAddr);
+//	debuglog(txt);
+	}else {
+#ifdef ERROR_LOG
+		debuglog("unable to hook sceDisplayWaitVblankStart\r\n");
+#endif
+	}
+
+	originalAddr = sctrlHENFindFunction("sceDisplay_Service", "sceDisplay", 0x36CDFADE);
+	if (originalAddr != NULL){
+		sctrlHENPatchSyscall(originalAddr, sceDisplayWaitVblank3D);
+		sceKernelDcacheWritebackInvalidateAll();
+		sceKernelIcacheInvalidateAll();
+		sceDisplayWaitVblank_Func = (void*)originalAddr;
+//	sprintf(txt, "DisplayBuff addr: %X\r\n", originalAddr);
+//	debuglog(txt);
+	}else {
+#ifdef ERROR_LOG
+		debuglog("unable to hook sceDisplayWaitVblank\r\n");
+#endif
+	}
+
+
 	originalAddr = sctrlHENFindFunction("sceGE_Manager", "sceGe_user", 0xE0D68148);
 	if (originalAddr != NULL){
 		sctrlHENPatchSyscall(originalAddr, sceGeListUpdateStallAddr3D);
@@ -1962,7 +2369,7 @@ void hookFunctions(void) {
 		sceGeListUpdateStallAddr_Func = (void*)originalAddr;
 	} else {
 #ifdef ERROR_LOG
-		debuglog("unable to hook sceGeDrawSync\r\n");
+		debuglog("unable to hook sceGeListUpdateStallAddr\r\n");
 #endif
 	}
 
@@ -1974,7 +2381,7 @@ void hookFunctions(void) {
 		sceGeListEnQueue_Func = (void*)originalAddr;
 	} else {
 #ifdef ERROR_LOG
-		debuglog("unable to hook sceGeDrawSync\r\n");
+		debuglog("unable to hook sceGeListEnQueue\r\n");
 #endif
 	}
 
@@ -2002,6 +2409,17 @@ void hookFunctions(void) {
 #endif
 	}
 
+	originalAddr = sctrlHENFindFunction("sceGE_Manager", "sceGe_user", 0xA4FC06A4);
+	if (originalAddr != NULL){
+		sctrlHENPatchSyscall(originalAddr, sceGeSetCallback3D);
+		sceKernelDcacheWritebackInvalidateAll();
+		sceKernelIcacheInvalidateAll();
+		sceGeSetCallback_Func = (void*)originalAddr;
+	} else {
+#ifdef ERROR_LOG
+		debuglog("unable to hook sceGeSetCallback\r\n");
+#endif
+	}
 /*	debuglog("hook gesavecontext\r\n");
 	sceGeSaveContext_Func = sctrlHENFindFunction("sceGE_Manager", "sceGe_user", 0x438A385A);
 	sctrlHENPatchSyscall(sceGeSaveContext_Func, sceGeSaveContext3D);
@@ -2009,159 +2427,7 @@ void hookFunctions(void) {
 	sceKernelIcacheInvalidateAll();
 	debuglog("hook done\r\n");
 	*/
-/*
-	SceModule *module = sceKernelFindModuleByName( "sceDisplay_Service" );
-	if ( module == NULL ){
-#ifdef ERROR_LOG
-		debuglog("unable to find sceDisplay_Service module\r\n");
-#endif
-
-		return;
-	}
-
-	if ( sceDisplaySetFrameBuf_Func == NULL )
-	{
-		sceDisplaySetFrameBuf_Func = HookNidAddress( module, "sceDisplay", 0x289D82FE );
-		void *hook_addr = HookSyscallAddress( sceDisplaySetFrameBuf_Func );
-		if (hook_addr != NULL){
-		HookFuncSetting( hook_addr, sceDisplaySetFrameBuf3D );
-#ifdef DEBUG_MODE
-	debuglog("Invalidating the cache after hooking sceDisplaySetFrameBuf\r\n");
-#endif
-	sceKernelDcacheWritebackInvalidateAll();
-	sceKernelIcacheInvalidateAll();
-		}else {
-#ifdef ERROR_LOG
-			debuglog("unable to hook sceDisplaySetFrameBuf\r\n");
-#endif
-		}
-
-	}
-*/
-/*
-	if (sceGeListEnQueue_Func == NULL) {
-		sceGeListEnQueue_Func = HookNidAddress(module2, "sceGe_user",
-				0xAB49E76A);
-		void *hook_addr = HookSyscallAddress(sceGeListEnQueue_Func);
-		if (hook_addr != NULL){
-			HookFuncSetting(hook_addr, sceGeListEnQueue3D);
-#ifdef DEBUG_MODE
-	debuglog("Invalidating the cache after hooking sceGeListEnqueue\r\n");
-#endif
-	sceKernelDcacheWritebackInvalidateAll();
-	sceKernelIcacheInvalidateAll();
-		}else {
-#ifdef ERROR_LOG
-			debuglog("unable to hook sceGeListEnQueue\r\n");
-#endif
-		}
-	}
-
-	if (sceGeListEnQueueHead_Func == NULL) {
-		sceGeListEnQueueHead_Func = HookNidAddress(module2, "sceGe_user",
-				0x1C0D95A6);
-		void *hook_addr = HookSyscallAddress(sceGeListEnQueueHead_Func);
-		if (hook_addr != NULL){
-			HookFuncSetting(hook_addr, sceGeListEnQueue3DHead);
-#ifdef DEBUG_MODE
-	debuglog("Invalidating the cache after hooking sceGeListEnqueueHead\r\n");
-#endif
-	sceKernelDcacheWritebackInvalidateAll();
-	sceKernelIcacheInvalidateAll();
-		}else {
-#ifdef ERROR_LOG
-			debuglog("unable to hook sceGeListEnQueueHead\r\n");
-#endif
-		}
-	}
-
-	if (sceGeListDeQueue_Func == NULL) {
-		sceGeListDeQueue_Func = HookNidAddress(module2, "sceGe_user",
-				0x5FB86AB0);
-		void *hook_addr = HookSyscallAddress(sceGeListDeQueue_Func);
-		if (hook_addr != NULL){
-				HookFuncSetting(hook_addr, MYsceGeListDeQueue);
-#ifdef DEBUG_MODE
-	debuglog("Invalidating the cache after hooking sceGeListDequeue\r\n");
-#endif
-	sceKernelDcacheWritebackInvalidateAll();
-	sceKernelIcacheInvalidateAll();
-		}else {
-#ifdef ERROR_LOG
-			debuglog("unable to hook sceGeListDeQueue\r\n");
-#endif
-		}
-	}
-
-	if (sceGeListSync_Func == NULL) {
-		sceGeListSync_Func = HookNidAddress(module2, "sceGe_user", 0x03444EB4);
-		void *hook_addr = HookSyscallAddress(sceGeListSync_Func);
-		if (hook_addr != NULL){
-			HookFuncSetting(hook_addr, sceGeListSync3D);
-#ifdef DEBUG_MODE
-	debuglog("Invalidating the cache after hooking sceGeListSync\r\n");
-#endif
-	sceKernelDcacheWritebackInvalidateAll();
-	sceKernelIcacheInvalidateAll();
-		}else {
-#ifdef ERROR_LOG
-			debuglog("unable to hook sceGeListSync\r\n");
-#endif
-		}
-	}
-
-	if (sceGeListUpdateStallAddr_Func == NULL) {
-		sceGeListUpdateStallAddr_Func = HookNidAddress(module2, "sceGe_user",
-				0xE0D68148);
-		void *hook_addr = HookSyscallAddress(sceGeListUpdateStallAddr_Func);
-		if (hook_addr != NULL){
-			HookFuncSetting(hook_addr, sceGeListUpdateStallAddr3D);
-#ifdef DEBUG_MODE
-	debuglog("Invalidating the cache after hooking sceGeListUpdateStallAddr\r\n");
-#endif
-	sceKernelDcacheWritebackInvalidateAll();
-	sceKernelIcacheInvalidateAll();
-		}else {
-#ifdef ERROR_LOG
-			debuglog("unable to hook sceGeListUpdateStall\r\n");
-#endif
-		}
-	}
-	if (sceGeDrawSync_Func == NULL) {
-		sceGeDrawSync_Func = HookNidAddress(module2, "sceGe_user", 0xB287BD61);
-		void *hook_addr = HookSyscallAddress(sceGeDrawSync_Func);
-		if (hook_addr != NULL){
-			HookFuncSetting(hook_addr, sceGeDrawSync3D);
-#ifdef DEBUG_MODE
-	debuglog("Invalidating the cache after hooking sceGeDrawSync\r\n");
-#endif
-	sceKernelDcacheWritebackInvalidateAll();
-	sceKernelIcacheInvalidateAll();
-		}else {
-#ifdef ERROR_LOG
-			debuglog("unable to hook sceGeDrawSync\r\n");
-#endif
-		}
-	}
-
-	if (sceGeSetCallback_Func == NULL) {
-			sceGeSetCallback_Func = HookNidAddress(module2, "sceGe_user", 0xA4FC06A4);
-			void *hook_addr = HookSyscallAddress(sceGeSetCallback_Func);
-			if (hook_addr != NULL){
-				HookFuncSetting(hook_addr, sceGeSetCallback3D);
-	#ifdef DEBUG_MODE
-		debuglog("Invalidating the cache after hooking sceGeSetCallback\r\n");
-	#endif
-		sceKernelDcacheWritebackInvalidateAll();
-		sceKernelIcacheInvalidateAll();
-			}else {
-	#ifdef ERROR_LOG
-				debuglog("unable to hook sceGeSetCallback\r\n");
-	#endif
-			}
-		}
-
-	if (sceGeGetMtx_Func == NULL) {
+/*	if (sceGeGetMtx_Func == NULL) {
 			sceGeGetMtx_Func = HookNidAddress(module2, "sceGe_user", 0x57C8945B);
 			void *hook_addr = HookSyscallAddress(sceGeGetMtx_Func);
 			if (hook_addr != NULL){

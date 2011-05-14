@@ -173,7 +173,17 @@ static int MainThread( SceSize args, void *argp )
 	return( 0 );
 }
 */
+SceUID debugSema;
 
+int loggingThread(SceSize args, void* argp){
+	while (running){
+		if (sceKernelWaitSema(debugSema, 1, 0) >= 0){
+			debuglog_async();
+		}
+		sceKernelDelayThread(1000);
+	}
+	return sceKernelExitDeleteThread(0);
+}
 /*------------------------------------------------------------------------------*/
 /* main thread
 /*------------------------------------------------------------------------------*/
@@ -183,15 +193,21 @@ int MainThread( SceSize args, void *argp ){
 	char firstRun = 1;
 	SceCtrlData paddata;
 	unsigned int lastButtons = 0;
+	char txt[100];
+
 
 #ifdef DEBUG_MODE
 	debuglog("Plugin started\r\n");
 #endif
 	readConfigFile(gametitle);
 
+	while (sceKernelFindModuleByName("sceKernelLibrary") == NULL)
+	{
+		sceKernelDelayThread(100);
+	}
 	while (sceKernelFindModuleByName("sceDisplay_Service") == NULL)
 	{
-		sceKernelDelayThread(20);
+		sceKernelDelayThread(100);
 	}
 
 #ifdef DEBUG_MODE
@@ -200,7 +216,7 @@ int MainThread( SceSize args, void *argp ){
 
 	while (sceKernelFindModuleByName("sceGE_Manager") == NULL)
 	{
-		sceKernelDelayThread(20);
+		sceKernelDelayThread(100);
 	}
 
 #ifdef DEBUG_MODE
@@ -217,63 +233,124 @@ int MainThread( SceSize args, void *argp ){
 	//set a default activation button while in debug/trace mode
 	currentConfig.activationBtn = 0x800000; //note key//0x400000; // screen key
 #endif
+	debugSema = sceKernelCreateSema("debugSema",0,0,1,0);
+//	sprintf(txt, "Sema: %u\r\n", debugSema);
+//	debuglog(txt);
+
+	u64 lastTick,currTick;
+	unsigned char timerStart = 0;
+	unsigned char pluginMenu = 0;
+	float tickFrequency; //reciproke off tickFrequ
+
 	while (running){
-		sceCtrlPeekBufferPositive(&paddata, 1);
+		if (timerStart && paddata.Buttons & PSP_CTRL_START){
+			sceRtcGetCurrentTick(&currTick);
+#ifdef DEBUG_MODE
+			float time = (currTick - lastTick)*tickFrequency;
+			sprintf(txt, "Continuously pressing Start! Time: %d \r\n", (int)time );
+			debuglog(txt);
+#endif
+			if ((currTick - lastTick)*tickFrequency > 5.0f){
+				timerStart = 0;
+				pluginMenu = pluginMenuInit();
+				sceKernelDelayThread(1000);
+			}
+		}else if (timerStart && !(paddata.Buttons & PSP_CTRL_START)){
+			timerStart = 0;
+		}
+		if (pluginMenu){
+			pluginMenuDisplay();
+		}
+		if (!pluginMenu)
+			sceCtrlPeekBufferPositive(&paddata, 1); //this seem to keep the pad data for the game
+		else
+			sceCtrlReadBufferPositive(&paddata, 1); //using this the does not get the key any longer
+		                                            //however, use this to prevent the game handling all
+		                                            //keys pressed while menu displayd after it ic closed
 		if(paddata.Buttons != lastButtons)
 		{
-			//
-			// special keys to change behavior of plugin
-			//
-			if (draw3D == 3){
-				noteHandled = 0;
-				//sprintf(txt, "Buttons : %X\r\n", paddata.Buttons);
-				//debuglog(txt);
-				if ((paddata.Buttons & 0xffffff) == (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER)){
-					currentConfig.showStat = 1;
+			if (pluginMenu){
+				pluginMenu = pluginMenuHandleButton(paddata.Buttons);
+			} else {
+
+				//
+				// once START was pressed a counter should start to indicate that a plugin menu shall
+				// be display after a certain time
+				//
+				if (paddata.Buttons & PSP_CTRL_START){
+					if (!timerStart){
+#ifdef DEBUG_MODE
+						debuglog("TimerStart Menu\r\n");
+#endif
+						timerStart = 1;
+						sceRtcGetCurrentTick(&lastTick);
+						tickFrequency = 1.0f / sceRtcGetTickResolution();
+					}
 				} else {
-					currentConfig.showStat = 0;
+					timerStart = 0;
 				}
-
-				if ((paddata.Buttons & 0xffffff) == (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER | PSP_CTRL_LEFT))
-					currentConfig.rotationAngle -= 0.25f*GU_PI/180.0f;
-				if ((paddata.Buttons & 0xffffff) == (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER | PSP_CTRL_RIGHT))
-					currentConfig.rotationAngle += 0.25f*GU_PI/180.0f;
-
-				if ((paddata.Buttons & 0xffffff) == (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER | PSP_CTRL_UP))
-					currentConfig.rotationDistance -= 1.0f;
-				if ((paddata.Buttons & 0xffffff) == (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER | PSP_CTRL_DOWN))
-					currentConfig.rotationDistance += 1.0f;
-
-				if ((paddata.Buttons & 0xffffff) == (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER | currentConfig.activationBtn)){
-					currentConfig.colorMode++;
-					if (currentConfig.colFlip == 0){
-						if (currentConfig.colorMode >= MAX_COL_MODE)
-							currentConfig.colorMode = 0;
+				/*
+				//
+				// special keys to change behavior of plugin
+				//
+				if (draw3D == 3){
+					noteHandled = 0;
+					//sprintf(txt, "Buttons : %X\r\n", paddata.Buttons);
+					//debuglog(txt);
+					if ((paddata.Buttons & 0xffffff) == (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER)){
+						currentConfig.showStat = 1;
 					} else {
-						if (currentConfig.colorMode >= MAX_COL_MODE*2)
-							currentConfig.colorMode = MAX_COL_MODE;
+						currentConfig.showStat = 0;
 					}
-					noteHandled = 1;
-				}
 
-				if ((paddata.Buttons & 0xffffff) == (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER | PSP_CTRL_TRIANGLE)){
-					if (currentConfig.colFlip == 1){
-						currentConfig.colFlip = 0;
-						currentConfig.colorMode -= MAX_COL_MODE;
-					}else{
-						currentConfig.colFlip = 1;
-						currentConfig.colorMode += MAX_COL_MODE;
+					if ((paddata.Buttons & 0xffffff) == (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER | PSP_CTRL_LEFT))
+						currentConfig.rotationAngle -= 0.25f*GU_PI/180.0f;
+					if ((paddata.Buttons & 0xffffff) == (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER | PSP_CTRL_RIGHT))
+						currentConfig.rotationAngle += 0.25f*GU_PI/180.0f;
+
+					if ((paddata.Buttons & 0xffffff) == (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER | PSP_CTRL_UP))
+						currentConfig.rotationDistance -= 1.0f;
+					if ((paddata.Buttons & 0xffffff) == (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER | PSP_CTRL_DOWN))
+						currentConfig.rotationDistance += 1.0f;
+
+					if ((paddata.Buttons & 0xffffff) == (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER | currentConfig.activationBtn)){
+						currentConfig.colorMode++;
+						if (currentConfig.colFlip == 0){
+							if (currentConfig.colorMode >= MAX_COL_MODE)
+								currentConfig.colorMode = 0;
+						} else {
+							if (currentConfig.colorMode >= MAX_COL_MODE*2)
+								currentConfig.colorMode = MAX_COL_MODE;
+						}
+						noteHandled = 1;
+					}
+
+					if ((paddata.Buttons & 0xffffff) == (PSP_CTRL_LTRIGGER | PSP_CTRL_RTRIGGER | PSP_CTRL_TRIANGLE)){
+						if (currentConfig.colFlip == 1){
+							currentConfig.colFlip = 0;
+							currentConfig.colorMode -= MAX_COL_MODE;
+						}else{
+							currentConfig.colFlip = 1;
+							currentConfig.colorMode += MAX_COL_MODE;
+						}
 					}
 				}
+				*/
+			}
+			//in case the 3D mode was activated while in plugin Menu check whether we need to hook
+			//now...
+			if (draw3D == 1 && hooked == 0){
+				hookFunctions();
+				hooked = 1;
 			}
 			//press "note" button and magic begin
 			if(paddata.Buttons & currentConfig.activationBtn && noteHandled == 0)
 			{
-//#ifdef DEBUG_MODE
+#ifdef DEBUG_MODE
 				debuglog("ActivationButton pressed\n");
-//#endif
+#endif
 				//activate 3D rendering...
-				if (draw3D == 0){
+				if (draw3D == 0 || draw3D == 9){
 #ifdef DEBUG_MODE
 					debuglog("initiate render3D\r\n");
 #endif
@@ -293,10 +370,11 @@ int MainThread( SceSize args, void *argp ){
 			}
 			lastButtons = paddata.Buttons;
 		}
-		sceKernelDelayThread(100000);
+		sceKernelDelayThread(30000);
 		firstRun = 0;
 	}
-	return 0;
+	sceKernelDeleteSema(debugSema);
+	return sceKernelExitDeleteThread(0);
 }
 /*------------------------------------------------------------------------------*/
 /* module_start																	*/
@@ -312,8 +390,8 @@ int module_start( SceSize args, void *argp )
 		//until an ISO was choosen and loaded....
 		debuglog("Error getting game info\r\n");
 	}
-#ifdef DEBUG_MODE
 	char text[200];
+#ifdef DEBUG_MODE
 	sprintf(text, "Game ID:%s\r\n", gameid);
 	debuglog(text);
 	sprintf(text, "Game Title:%.100s\r\n", gametitle);
@@ -325,6 +403,15 @@ int module_start( SceSize args, void *argp )
 	{
 		running = 1;
 		sceKernelStartThread( MainThreadID, args, argp );
+	}
+
+	SceUID tid = sceKernelCreateThread( "logging_thread", loggingThread, 25, 0x1000, 0, NULL );
+	if ( tid >= 0 )
+	{
+		sceKernelStartThread( tid, 0, 0 );
+	} else {
+		sprintf(text,"unable creating logging thread: %X\r\n", tid);
+		debuglog(text);
 	}
 
 	return 0;

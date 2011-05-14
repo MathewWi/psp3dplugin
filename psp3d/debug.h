@@ -12,6 +12,14 @@
 
 #define LOGFILE "ms0:/psp3d.log"
 #define LOGFILEGO "ef0:/psp3d.log"
+
+typedef struct LogData{
+	const char* txt;
+	unsigned int p1, p2, p3;
+}LogData;
+
 // Debug Log
 int debuglog(const char * txt);//, ...);
+int debuglog_special(LogData* log);
+int debuglog_async();
 #endif 

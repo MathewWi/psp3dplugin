@@ -86,6 +86,8 @@ int blit_string(int sx,int sy,const char *msg)
 	char code;
 	unsigned char font;
 	u32 fg_col,bg_col;
+	unsigned int rcol;
+	unsigned short col;
 
 #if ALPHA_BLEND
 	u32 col,c1,c2;
@@ -125,10 +127,22 @@ int blit_string(int sx,int sy,const char *msg)
 					vram32[offset] = (col&0xffffff) + c1 + c2;
 				}
 #else
-				if (pixelformat == 3){
+				switch (pixelformat){
+				case 3: //PM: RGBA-8888
 					vram32[offset] = (font & 0x80) ? fg_col : bg_col;
-				} else {
-					((unsigned short*)vram32)[offset] = (font & 0x80) ? fg_col : bg_col;
+					break;
+				case 1: //PM: RGBA-5551
+					//need to convert from 8888 color mode to 5551
+					rcol = (font & 0x80) ? fg_col : bg_col;
+					col = ((rcol & 0xff) >> 3) | ((((rcol >> 8) & 0xff) >> 3) << 5) | ((((rcol >> 16) & 0xff) >> 3) << 10);
+					((unsigned short*)vram32)[offset] = col;
+					break;
+				case 2: //PM: RGBA-4444
+					rcol = (font & 0x80) ? fg_col : bg_col;
+					col = ((rcol & 0xff) >> 4) | ((((rcol >> 8) & 0xff) >> 4) << 4) | ((((rcol >> 16) & 0xff) >> 4) << 8);
+					((unsigned short*)vram32)[offset] = col;
+					break;
+
 				}
 #endif
 				font <<= 1;
