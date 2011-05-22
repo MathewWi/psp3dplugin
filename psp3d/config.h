@@ -35,13 +35,14 @@ typedef struct {
 	unsigned int rotAllTime;
 	unsigned int ignoreEnqueueCount;
 	unsigned int flipFlop;
-	unsigned int fixedFrameBuffer;
+	unsigned int fixedFrameBuffer1;
 	float rotationDistance;
 	float rotationAngle;
 	char showStat;
 	char colorMode;
 	unsigned char colFlip;
-	unsigned int placeHolder[20];
+	unsigned int fixedFrameBuffer2;
+	unsigned int placeHolder[19];
 	//char rotationAxis;
 }configData;
 

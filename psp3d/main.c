@@ -20,6 +20,7 @@ PSP_MODULE_INFO( "3dPlugin", 0x1000, 1, 1 );//PSP_MODULE_USER, 1, 1);//PSP_MODUL
 char running = 1;
 SceUID MainThreadID = -1;
 extern configData currentConfig;
+extern char defaultSettings;
 char draw3D = 0;
 
 //PSP_NO_CREATE_MAIN_THREAD();
@@ -340,6 +341,13 @@ int MainThread( SceSize args, void *argp ){
 			//in case the 3D mode was activated while in plugin Menu check whether we need to hook
 			//now...
 			if (draw3D == 1 && hooked == 0){
+				//patch for ISO's running from ISO loader. Ther
+				//will be no game section for the loader. Therefore we are running with
+				//default settings. Try to get the config again
+				if (defaultSettings == 1){
+					getGameInfoLate();
+					readConfigFile(gametitle);
+				}
 				hookFunctions();
 				hooked = 1;
 			}
@@ -357,6 +365,13 @@ int MainThread( SceSize args, void *argp ){
                     if (hooked == 0){
 						hookFunctions();
 						hooked = 1;
+					}
+                    //patch for ISO's running from ISO loader. Ther
+					//will be no game section for the loader. Therefore we are running with
+					//default settings. Try to get the config again
+					if (defaultSettings == 1){
+						getGameInfoLate();
+						readConfigFile(gametitle);
 					}
 					draw3D = 1;
 				}

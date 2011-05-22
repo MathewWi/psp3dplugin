@@ -170,3 +170,53 @@ int getGameInfo()
 	}
     return 0;
 }
+
+int getGameInfoLate(){
+
+	char * foo;
+	unsigned paramOffset;
+	unsigned iconOffset;
+	int fd;
+	int size = 0;
+	int i, ret;
+#ifdef DEBUG_MODE
+	char txt[250];
+#endif
+
+    memset(gameid,0x0,16);
+    debuglog("get gameinfo late\r\n");
+
+    fd = sceIoOpen("disc0:/PSP_GAME/PARAM.SFO", PSP_O_RDONLY, 0777); //IOASSIGN_RDONLY
+    if (fd < 0){
+//#ifdef DEBUG_MODE
+    	debuglog("unable to open PARAM.SFO\r\n");
+//#endif
+    } else {
+		size = sceIoLseek(fd, 0, SEEK_END);
+		sceIoLseek(fd, 0, SEEK_SET);
+		if (size <= 0)
+		{
+			sceIoClose(fd);
+			return -2;
+		}
+    }
+
+    SceUID memid = sceKernelAllocPartitionMemory(2, "paramsfo_buf", PSP_SMEM_Low, size+1, NULL);
+	foo = sceKernelGetBlockHeadAddr(memid);
+	memset(foo, 0, size+1);
+
+	if (fd){
+		sceIoRead(fd, foo, size+1);
+		sceIoClose(fd);
+
+		psfGetKey("DISC_ID", foo, gameid);
+		psfGetKey("TITLE", foo, gametitle);
+		sceKernelFreePartitionMemory(memid);
+#ifdef DEBUG_MODE
+		sprintf(txt, "GameId: %.100s\r\nGameTitle: %.100s\r\n", gameid, gametitle);
+		debuglog(txt);
+#endif
+	}
+
+	return 0;
+}

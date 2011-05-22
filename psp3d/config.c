@@ -31,7 +31,9 @@
 extern char draw3D;
 extern char gametitle[256];
 
-configData currentConfig;                // bbggrr    bbggrr
+configData currentConfig;
+char defaultSettings = 1;
+                                         // bbggrr    bbggrr
 colorMode colorModes[MAX_COL_MODE*2] = { {0x0000ff, 0xffff00},
 										 {0x00ff00, 0xff00ff},
 										 {0x00ffff, 0xff0000},
@@ -155,7 +157,10 @@ int readConfigFile(const char* gameTitle){
 	short defaultFound = 0;
 	short feof = 0;
 	//check for cutom config being present...only load deliverd if nothing exists...
-	if (loadCustomConfig()) return 1;
+	if (loadCustomConfig()) {
+		defaultSettings = 0;
+		return 1;
+	}
 // set default values in case there are sections missing in the file or it could
 // not be read proberbly
 	currentConfig.rotationDistance = 0.0f;//9.0f;
@@ -167,13 +172,15 @@ int readConfigFile(const char* gameTitle){
 	currentConfig.keepPixelmaskOrigin = 0;
 	currentConfig.lateHook = 1;
 	currentConfig.rotAllTime = 0;
-	currentConfig.ignoreEnqueueCount = 1;
+	currentConfig.ignoreEnqueueCount = 0;
 	currentConfig.activationBtn = 0x800000; //PSP_CTRL_NOTE
 	currentConfig.colorMode = 0;
 	currentConfig.showStat = 0;
 	currentConfig.colFlip = 0;
 	currentConfig.flipFlop = 0;
-	currentConfig.fixedFrameBuffer = 0;
+	currentConfig.fixedFrameBuffer1 = 0;//0x4000000;
+	currentConfig.fixedFrameBuffer2 = 0;
+	//currentConfig.stallDelay = 10000;
 
 	fd = sceIoOpen("ms0:/seplugins/psp3d.cfg",PSP_O_RDONLY, 0777);
 	//for PSPGo Support check if ms0 failed for ef0...
@@ -269,7 +276,12 @@ int readConfigFile(const char* gameTitle){
 
 						if (strncmp(cfgLine, "FIXED_FB=", 9)==0)
 							//sscanf(&cfgLine[10], "%d", &currentConfig.clearScreen);
-							currentConfig.fixedFrameBuffer = charToUi(&cfgLine[9]);
+							currentConfig.fixedFrameBuffer1 = charToUi(&cfgLine[10]);
+						if (strncmp(cfgLine, "FIXED_FB2=", 10)==0)
+							//sscanf(&cfgLine[10], "%d", &currentConfig.clearScreen);
+							currentConfig.fixedFrameBuffer2 = charToUi(&cfgLine[10]);
+						//if (strncmp(cfgLine, "STALL_DELAY=", 12)==0)
+							//currentConfig.stallDelay = charToUi(&cfgLine[12]);
 
 						if (strncmp(cfgLine, "BTN_ACTIVATION=", 15) == 0)
 							currentConfig.activationBtn = charToUi(&cfgLine[15]);
@@ -309,6 +321,7 @@ int readConfigFile(const char* gameTitle){
 				defaultFound = 0;
 			} else if (sectionFound == 1) {
 				//real section found...leave...
+				defaultSettings = 0;
 #ifdef DEBUG_MODE
 			debuglog("game specific - all ready..\r\n");
 #endif

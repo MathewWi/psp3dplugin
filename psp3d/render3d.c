@@ -1315,7 +1315,7 @@ unsigned int* clearScreen(unsigned int* geList, unsigned int clearFlags) {
  * setup a display list to prepare the 3D rendering
  * this is: clear screen, set current PixelMask
  */
-unsigned int* prepareRender3D(unsigned int listId, unsigned int* list, short buffer, unsigned int pixelMask, short withClear, short rot){
+unsigned int* prepareRender3D(unsigned int* list, short buffer, unsigned int pixelMask, short withClear, short rot){
 
 #ifdef DEBUG_MODE
 	char txt[100];
@@ -1605,6 +1605,10 @@ int sceGeListUpdateStallAddr3D(int qid, void *stall) {
 /*
  * FIFA 11 calls Enqueue twice...need to ignore the second run (see config) !
  */
+/*
+ * Gods Eater does work stable only if we switch red/cyan mode each frame
+ * and do not pass the display list twice..this does stop rendering for an unknown reason..
+ */
 short enqueueRun = 0;
 int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *arg) {
 	int k1 = pspSdkSetK1(0);
@@ -1622,7 +1626,7 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 			//assumed is rendering to an off screen area and using this as texture to render
 			//to on-screen within a VBlank-Wait interrupt..
 			//we do ignore this kind of list from plugin point of view
-			//however, this occurs on each vBlank...which would be 60 times per sec.
+			//however, this occurs on each vBlank twice...which would be 60 times per sec.
 			//guessing that there have to be a call back in place indicating that the real drawing
 			//has taken place...
 			//char* txt = "Enqueue-Interrupt: %X, Stall: %X, counter: %d\r\n";
@@ -1709,17 +1713,19 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 		//sceRtcGetCurrentTick(&lastTick);
 		//tickFrequency = 1.0f / sceRtcGetTickResolution();
 	} else if (draw3D == 3 || draw3D == 4) {
-		//make there there is no interupt interfering with the following processing
+		//make sure there is no interupt interfering with the following processing
 		//int flags = sceKernelSuspendIntr();
+
 		draw3D = 3; //make sure we switch from 4 to 3 to start at the right point in stallUpdate!
 
 #ifdef DEBUG_MODE
 		sprintf(text,"%u GeListEnqueue - draw3D 3\r\n" , state);
 		debuglog(text);
 #endif
-
+		if (sceKernelIsIntrContext() == 1){
+			debuglog("enqueue interrupt\r\n");
+		}
 		//traceGeList(list);
-
 		listPassedComplete = 0;
 		stopCount = 0;
 		renderPass = 1;
@@ -1731,7 +1737,7 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 			local_list_s = (unsigned int*) (((unsigned int) geList3D[0])| 0x40000000);
 			listId = sceGeListEnQueue_Func(local_list_s, local_list_s, 0, 0);
 
-			local_list_s = prepareRender3D(listId, local_list_s, 1, 0x000000, 0, 0);
+			local_list_s = prepareRender3D(local_list_s, 1, 0x000000, 0, 0);
 			sceGeListUpdateStallAddr_Func(listId, local_list_s);
 			sceGeListSync_Func(listId, 0);
 			pspSdkSetK1(k1);
@@ -1746,89 +1752,95 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 		}*/
 		//enqueue mean starting new list...we would like to add some initial settings
 		//first
-		//in case Enqueue is called more than once while one draw pass is executed
-		//we check for the flag drawSync which is set once the last draw has finished
 		local_list_s = (unsigned int*) (((unsigned int) geList3D[0]) | 0x40000000);
 		ll_start = local_list_s;
 		//listId = sceGeListEnQueue_Func(local_list_s, local_list_s, 0,0);
 		//prepare 3d-render: clear screen and set pixel mask - do not write red
 		if (currentConfig.flipFlop == 0){
-			local_list_s = prepareRender3D(listId, local_list_s, state-1, colorModes[currentConfig.colorMode].color1, currentConfig.clearScreen, 0);
+			local_list_s = prepareRender3D(local_list_s, state-1, colorModes[currentConfig.colorMode].color1, currentConfig.clearScreen, 0);
 		} else {
 			if (state == 1){
-				local_list_s = prepareRender3D(listId, local_list_s, state-1, colorModes[currentConfig.colorMode].color1, currentConfig.clearScreen, 0);
+				local_list_s = prepareRender3D(local_list_s, state-1, colorModes[currentConfig.colorMode].color1, currentConfig.clearScreen, 0);
 			} else{
-				local_list_s = prepareRender3D(listId, local_list_s, state-1, colorModes[currentConfig.colorMode].color2, currentConfig.clearScreen, 0);
+				local_list_s = prepareRender3D(local_list_s, state-1, colorModes[currentConfig.colorMode].color2, currentConfig.clearScreen, 0);
 			}
 		}
 		//sceGeListUpdateStallAddr_Func(listId, local_list_s);
-//		debuglog("enqueue local list\r\n");
-		listId = sceGeListEnQueue_Func(ll_start, 0, 0,0);
+#ifdef DEBUG_MODE
+		debuglog("enqueue local list\r\n");
+#endif
+		listId = sceGeListEnQueue_Func(ll_start, 0, 0, 0);
+
+		/*
+#ifdef DEBUG_MODE
+		debuglog("Resume interrupts\r\n");
+#endif
+		sceKernelResumeIntr(flags);
+		*/
 		//debuglog("sync local list\r\n");
-		//sceGeListSync_Func(listId, 0);
+//		sceGeListSync_Func(listId, 0);
 
 		if (stall == 0){
 			//traceGeList((unsigned int*)list);
 			listPassedComplete = 1;
 			//now manipulate the GE list to change the view-Matrix
-			if (currentConfig.flipFlop == 0){
-				//Gods Eater does work stable only if we switch red/cyan mode each frame
-				//and do not pass the display list twice..this does stop rendering for an unknown reason..
-				if (currentConfig.needStage1 == 1){// && numerek < 3){
-					//make sure there is nothing located in the cache
-					sceKernelDcacheWritebackInvalidateAll();
-	#ifdef DEBUG_MODE
-					sprintf(text, "Stage 1 List 0x%X\r\n", MYlocal_list);
-					debuglog(text);
-	#endif
-					maxInterrupts = 0;
-					Render3dStage1((unsigned int*)MYlocal_list);
-					//make sure there is nothing located in the cache
-					sceKernelDcacheWritebackInvalidateAll();
-				}
-			}
 			if (currentConfig.flipFlop == 1){
 				if (state == 1){
 					if (currentConfig.needStage1 == 1){
 						renderPass = 1;
 						Render3dStage1((unsigned int*)MYlocal_list);
-						//debuglog("after stage 1 manipulation\r\n");
-					//debuglog("pass 1. enqueue\r\n");
-	//				sceGeListEnQueue_Func((unsigned int*)list, 0, cbid, arg);
-					//renderPass = 2;
-					//sceGeListEnQueue_Func((unsigned int*)list, 0, 0, 0);
-					//debuglog("set call back again\r\n");
-					//geCallbackId = sceGeSetCallback_Func(geCallbacks_orig);
-					//debuglog("call back reset\r\n");
 					}
 				} else {
 					renderPass = 2;
 					Render3dStage2((unsigned int*)MYlocal_list);
-					//geCallbackId = sceGeSetCallback_Func(geCallbacks_orig);
 				}
 			} else {
+				if (currentConfig.needStage1 == 1){// && numerek < 3){
+					//make sure there is nothing located in the cache
+#ifdef DEBUG_MODE
+					debuglog("clear cache stage 1\r\n");
+#endif
+					sceKernelDcacheWritebackInvalidateAll();
+#ifdef DEBUG_MODE
+					sprintf(text, "Stage 1 List 0x%X\r\n", MYlocal_list);
+					debuglog(text);
+#endif
+					maxInterrupts = 0;
+					Render3dStage1((unsigned int*)MYlocal_list);
+					//make sure there is nothing located in the cache
+					sceKernelDcacheWritebackInvalidateAll();
+				}
 
 				//try to render the second frame at the same time to overlay the
 				//current draw
 				//pass current list to hardware and wait until it was processed
-
-				//debuglog("pass list 1. time\r\n");
+#ifdef DEBUG_MODE
+				debuglog("pass list 1. time\r\n");
+#endif
 				listId = sceGeListEnQueue_Func((unsigned int*)list, 0, cbid, arg);
-				//debuglog("sync 1. pass\r\n");
+#ifdef DEBUG_MODE
+				debuglog("sync 1. pass\r\n");
+#endif
 				sceGeListSync_Func(listId, 0);
 
 				local_list_s = (unsigned int*) (((unsigned int) geList3D[1]) | 0x40000000);
 				ll_start = local_list_s;
 				//listId = sceGeListEnQueue_Func(local_list_s, local_list_s, 0, 0);
-				local_list_s = prepareRender3D(listId, local_list_s, state-1, colorModes[currentConfig.colorMode].color2, 2, 1);
+				local_list_s = prepareRender3D(local_list_s, state-1, colorModes[currentConfig.colorMode].color2, 2, 1);
 				//sceGeListUpdateStallAddr_Func(listId, local_list_s);
-				//debuglog("enqueue local list2\r\n");
+#ifdef DEBUG_MODE
+				debuglog("enqueue local list2\r\n");
+#endif
 				listId = sceGeListEnQueue_Func(ll_start, 0, 0,0);
+
 				//debuglog("sync local list2\r\n");
 				//sceGeListSync_Func(listId, 0);
 
 				// do the second run
 				//make sure there is nothing located in the cache
+#ifdef DEBUG_MODE
+				debuglog("clear cache 2nd\r\n");
+#endif
 				sceKernelDcacheWritebackInvalidateAll();
 				frameBuffCount = 0;
 				viewMatrixCount = 0;
@@ -1869,13 +1881,16 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 					if (currentConfig.needStage1 == 1){
 						renderPass = 1;
 						Render3dStage1((unsigned int*)MYlocal_list);
+						//sceKernelDelayThread(10000);
 					}
 				}
 				sceKernelDcacheWritebackInvalidateAll();
 			nextStart_list = (unsigned int*) ((unsigned int)stall | 0x40000000);
 		}
 		afterSync = 0;
+
 		//sceKernelResumeIntr(flags);
+
 		//geCallbackId = sceGeSetCallback_Func(geCallbacks_orig);
 		//debuglog("set callback\r\n");
 
@@ -1888,7 +1903,7 @@ int sceGeListEnQueue3D(const void *list, void *stall, int cbid, PspGeListArgs *a
 		local_list_s = (unsigned int*) (((unsigned int) geList3D[0])| 0x40000000);
 		listId = sceGeListEnQueue_Func(local_list_s, local_list_s, 0, 0);
 
-		local_list_s = prepareRender3D(listId, local_list_s, 1, 0x000000, 0, 0);
+		local_list_s = prepareRender3D(local_list_s, 1, 0x000000, 0, 0);
 		sceGeListUpdateStallAddr_Func(listId, local_list_s);
 		sceGeListSync_Func(listId, 0);
 		draw3D = 0;
@@ -1953,13 +1968,13 @@ int sceGeDrawSync3D(int syncType) {
 	//reset the next Start address
 	int k1 = pspSdkSetK1(0);
 	unsigned int* local_list;
+	unsigned int* ll_list;
 	drawSync = 1;
 	//after each sync check for certain bits of the geList
 	//if (draw3D == 0)
 		//traceGeList(MYlocal_list);
 	char text[150];
 #ifdef DEBUG_MODE
-
 	if (draw3D > 0) {
 		//sceKernelDelayThread(10);
 		if (sceKernelIsIntrContext() == 1){
@@ -1967,13 +1982,7 @@ int sceGeDrawSync3D(int syncType) {
 			//assumed is rendering to an offscreen area and using this as texture to render
 			//to on-screen within a VBlank-Wait interrupt..
 			//we do ignore this kind of list...
-			char* txt = "DrawSync\r\n";
-			strncpy(logText, txt, strlen(txt));
-			logData.txt = logText;
-			logData.p1 = 0;
-			logData.p2 = 0;
-			logData.p3 = 0;
-			debuglog_special(&logData);
+			debuglog("DrawSync Intr.\r\n");
 			pspSdkSetK1(k1);
 			MYlocal_list = 0;
 			int ret = sceGeDrawSync_Func(syncType);
@@ -1992,18 +2001,12 @@ int sceGeDrawSync3D(int syncType) {
 		sprintf(text, "pass last list after stall 2nd time %X\r\n", (unsigned int)MYlocal_list);
 		debuglog(text);
 #endif
-		//int interupts = pspSdkDisableInterrupts();
 		unsigned int * local_list_s = (unsigned int*) (((unsigned int) geList3D[1])| 0x40000000);
-		//pspSdkSetK1(k1);
-		int listId = sceGeListEnQueue_Func(local_list_s, local_list_s, 0, 0);
-//		debuglog("pass 2 enqueue\r\n");
-		//k1 = pspSdkSetK1(0);;
+		ll_list = local_list_s;
 		//set pixel mask and clear screen if necessary - do not draw cyan
-		local_list_s = prepareRender3D(listId, local_list_s, state - 1, colorModes[currentConfig.colorMode].color2, 2, 1);
-		//pspSdkSetK1(k1);
-		sceGeListUpdateStallAddr_Func(listId, local_list_s);
-//		debuglog("pass 2 stallupdate clear\r\n");
-		//k1 = pspSdkSetK1(0);
+		local_list_s = prepareRender3D(local_list_s, state - 1, colorModes[currentConfig.colorMode].color2, 2, 1);
+		int listId = sceGeListEnQueue_Func(ll_list, 0, 0, 0);
+		//sceGeListSync_Func(listId, 0);
 		manipulate = 0;
 		local_list = (unsigned int*)MYlocal_list;
 		//make sure there is nothing sitting in the cache
@@ -2012,7 +2015,6 @@ int sceGeDrawSync3D(int syncType) {
 		frameBuffCount = 0;
 		viewMatrixCount = 0;
 		clearCount = 0;
-//		debuglog("before stage 2\r\n");
 		void* stall = Render3dStage2((unsigned int*)local_list);
 #ifdef DEBUG_MODE
 		sprintf(text, "%u viewCount: %d, frameBuffCount: %d, clearCount: %d\r\n", state, viewMatrixCount, frameBuffCount, clearCount);
@@ -2023,21 +2025,10 @@ int sceGeDrawSync3D(int syncType) {
 
 		//make sure there is nothing sitting in the cache
 		sceKernelDcacheWritebackInvalidateAll();
-		//sceKernelIcacheInvalidateAll();
-		//pspSdkSetK1(k1);
 	//	debuglog("pass 2 real list enqueue\r\n");
 		listId = sceGeListEnQueue_Func(local_list, 0, 0, enqueueArg);
-		//k1 = pspSdkSetK1(0);
 		sceGeListSync_Func(listId, 0);
 		listPassedComplete = 1;
-		//pspSdkEnableInterrupts(interupts);
-		sceRtcGetCurrentTick(&currentTick);
-		float diff = (currentTick - lastTick)*tickFrequency;
-		//if (diff < 0.1f)
-			//sceKernelDelayThread(100000);
-		//sprintf(text,"tick-difference: %u.%.5u\r\n", (u16)diff, (u16)(diff*100000));
-		//debuglog(text);
-		lastTick = currentTick;
 	}
 	manipulate = 0;
 	numerek = 0;
@@ -2053,7 +2044,7 @@ int sceDisplayWaitVblankStart3D(){
 #ifdef DEBUG_MODE
 	if (draw3D > 0){
 		debuglog("WaitVBlankStart\r\n");
-		sceKernelDelayThread(100000);
+		//sceKernelDelayThread(100000);
 	}
 #endif
 	pspSdkSetK1(k1);
@@ -2066,7 +2057,7 @@ int sceDisplayWaitVblank3D(){
 #ifdef DEBUG_MODE
 	if (draw3D > 0){
 		debuglog("WaitVBlank\r\n");
-		sceKernelDelayThread(100000);
+		//sceKernelDelayThread(100000);
 	}
 #endif
 	pspSdkSetK1(k1);
@@ -2135,16 +2126,19 @@ int sceDisplaySetFrameBuf3D( void * frameBuffer, int buffWidth, int pixelFormat,
 #ifdef DEBUG_MODE
 			sprintf(txt, "set buffer 2: %X\r\n", temp);
 			debuglog(txt);
+			sprintf(txt, "fixed FB: %X\r\n", currentConfig.fixedFrameBuffer1);
+			debuglog(txt);
 #endif
 		}
 		if (frameBuff[0] != 0 && frameBuff[1] != 0){
-			if (currentConfig.fixedFrameBuffer == 0 && frameBuff[1] != frameBuff[0]){
+			if (currentConfig.fixedFrameBuffer1 == 0 && currentConfig.fixedFrameBuffer2 == 0 && frameBuff[1] != frameBuff[0]){
 				draw3D = 3;
 			}
-			if (currentConfig.fixedFrameBuffer != 0){
+			if (currentConfig.fixedFrameBuffer1 != 0 || currentConfig.fixedFrameBuffer2 != 0){
 				//in case of FiFa 11 the display buffer is always the same...the frame buffer as well
 				//TODO:FB for FIFA is fixed..frameBuff[0] = frameBuff[1] = 0x9C044000;
-				frameBuff[0] = frameBuff[1] = ((unsigned int) 0x9C << 24) | (currentConfig.fixedFrameBuffer & 0xfffff);
+				frameBuff[0] = ((unsigned int) 0x9C << 24) | (currentConfig.fixedFrameBuffer1 & 0xfffff);
+				frameBuff[1] = ((unsigned int) 0x9C << 24) | (currentConfig.fixedFrameBuffer2 & 0xfffff);
 				draw3D = 3;
 			}
 			if (draw3D == 3){

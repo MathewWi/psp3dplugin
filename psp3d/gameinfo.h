@@ -26,4 +26,5 @@ extern char gameid[16];
 extern char gametitle[256];
 
 int getGameInfo();
+int getGameInfoLate();
 #endif /* GAMEINFO_H_ */
